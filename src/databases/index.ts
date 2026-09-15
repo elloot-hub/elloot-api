@@ -3,6 +3,7 @@ export {
   withRlsTransaction,
   withServiceTransaction,
   creditWallet,
+  lockWalletUser,
   lockListingForUpdate,
   lockOfferForUpdate,
   lockOrderForUpdate,

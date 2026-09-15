@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
-import type { LedgerType, Prisma, PrismaClient } from "@prisma/client";
+import type { LedgerType, PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "./client";
+import { isOrderCode } from "../../lib/public-codes";
 
 export type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -13,6 +15,7 @@ type TxOptions = {
   isolationLevel?: Prisma.TransactionIsolationLevel;
   asService?: boolean;
   actor?: RlsActor | null;
+  timeout?: number;
 };
 
 function newId() {
@@ -42,8 +45,8 @@ export async function withRlsTransaction<T>(
     },
     {
       isolationLevel: options.isolationLevel ?? "ReadCommitted",
-      maxWait: 5_000,
-      timeout: 15_000,
+      maxWait: 10_000,
+      timeout: options.timeout ?? 45_000,
     },
   );
 }
@@ -79,6 +82,20 @@ export async function creditWallet(
   return id;
 }
 
+/**
+ * Take the same wallet advisory lock used by service_credit_wallet so
+ * balance checks + debit in one transaction are serialized per user.
+ */
+export async function lockWalletUser(
+  tx: Prisma.TransactionClient,
+  userId: string,
+) {
+  await tx.$executeRawUnsafe(
+    `SELECT pg_advisory_xact_lock(hashtext($1))`,
+    `wallet:${userId}`,
+  );
+}
+
 export type LockedListing = {
   id: string;
   sellerId: string;
@@ -89,6 +106,7 @@ export type LockedListing = {
   stockQuantity: number;
   listingModel: string;
   status: string;
+  deliveryMode: string;
 };
 
 export async function lockListingForUpdate(
@@ -105,7 +123,8 @@ export async function lockListingForUpdate(
       "priceCents",
       "stockQuantity",
       "listingModel"::text AS "listingModel",
-      status::text AS status
+      status::text AS status,
+      "deliveryMode"::text AS "deliveryMode"
     FROM listings
     WHERE id = ${listingId}
     FOR UPDATE
@@ -119,6 +138,7 @@ export type LockedOffer = {
   title: string;
   priceCents: number;
   stockQuantity: number;
+  deliveryMode: string;
 };
 
 export async function lockOfferForUpdate(
@@ -131,7 +151,8 @@ export async function lockOfferForUpdate(
       "listingId",
       title,
       "priceCents",
-      "stockQuantity"
+      "stockQuantity",
+      "deliveryMode"::text AS "deliveryMode"
     FROM listing_offers
     WHERE id = ${offerId}
     FOR UPDATE
@@ -141,6 +162,7 @@ export async function lockOfferForUpdate(
 
 export type LockedOrder = {
   id: string;
+  code: string;
   listingId: string;
   offerId: string | null;
   buyerId: string;
@@ -153,11 +175,15 @@ export type LockedOrder = {
 
 export async function lockOrderForUpdate(
   tx: Prisma.TransactionClient,
-  orderId: string,
+  orderRef: string,
 ): Promise<LockedOrder | null> {
+  const whereSql = isOrderCode(orderRef)
+    ? Prisma.sql`code = ${orderRef}`
+    : Prisma.sql`id = ${orderRef}`;
   const rows = await tx.$queryRaw<LockedOrder[]>`
     SELECT
       id,
+      code,
       "listingId",
       "offerId",
       "buyerId",
@@ -167,7 +193,7 @@ export async function lockOrderForUpdate(
       status::text AS status,
       "expiresAt"
     FROM orders
-    WHERE id = ${orderId}
+    WHERE ${whereSql}
     FOR UPDATE
   `;
   return rows[0] ?? null;

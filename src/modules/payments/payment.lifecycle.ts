@@ -7,6 +7,10 @@ import {
 } from "../../databases";
 import { routes } from "../conversations/hrefs";
 import { notifyUser } from "../conversations/notifications.notify";
+import {
+  consumeAutoStockForOrder,
+  resolveOrderDeliveryMode,
+} from "../listings/delivery-stock.service";
 
 export type MarkOrderPaidInput = {
   providerRef: string;
@@ -44,7 +48,15 @@ export async function markOrderPaid(
       throw new AppError(404, "Payment not found", "PAYMENT_NOT_FOUND");
     }
     if (payment.status === "PAID") {
-      return { alreadyPaid: true as const, orderId: payment.orderId };
+      const codeRow = await tx.order.findUnique({
+        where: { id: payment.orderId },
+        select: { code: true },
+      });
+      return {
+        alreadyPaid: true as const,
+        orderId: payment.orderId,
+        orderCode: codeRow?.code ?? payment.orderId,
+      };
     }
 
     const order = await lockOrderForUpdate(tx, payment.orderId);
@@ -63,7 +75,23 @@ export async function markOrderPaid(
 
     const listing = await tx.listing.findUnique({
       where: { id: order.listingId },
-      select: { title: true },
+      select: { title: true, deliveryMode: true },
+    });
+
+    const deliveryMode = await resolveOrderDeliveryMode(tx, {
+      listingId: order.listingId,
+      offerId: order.offerId,
+    });
+    const deliveryContent =
+      deliveryMode === "AUTO"
+        ? await consumeAutoStockForOrder(tx, order.id)
+        : null;
+    const now = new Date();
+    const autoDelivered = Boolean(deliveryContent);
+
+    const orderCodeRow = await tx.order.findUnique({
+      where: { id: payment.orderId },
+      select: { code: true },
     });
 
     await tx.payment.update({
@@ -74,7 +102,7 @@ export async function markOrderPaid(
           provider: options.provider,
           event: options.auditAction,
           providerRef,
-          at: new Date().toISOString(),
+          at: now.toISOString(),
           ...options.webhookMeta,
         },
       },
@@ -82,7 +110,16 @@ export async function markOrderPaid(
 
     await tx.order.update({
       where: { id: payment.orderId },
-      data: { status: "PAID", paidAt: new Date() },
+      data: {
+        status: autoDelivered ? "DELIVERED" : "PAID",
+        paidAt: now,
+        ...(autoDelivered
+          ? {
+              deliveredAt: now,
+              deliveryContent,
+            }
+          : {}),
+      },
     });
 
     await tx.escrowHold.create({
@@ -109,31 +146,37 @@ export async function markOrderPaid(
     return {
       alreadyPaid: false as const,
       orderId: payment.orderId,
+      orderCode: orderCodeRow?.code ?? payment.orderId,
       releaseAt,
       buyerId: order.buyerId,
       sellerId: order.sellerId,
       listingTitle: listing?.title ?? "seu anúncio",
+      autoDelivered,
     };
   }, actor ?? null);
 
   if (!result.alreadyPaid) {
-    const href = routes.order(result.orderId);
+    const href = routes.order(result.orderCode);
     const title = result.listingTitle;
     void notifyUser({
       userId: result.buyerId,
       type: "ORDER",
-      title: "Pagamento confirmado",
-      body: `Seu pagamento de “${title}” foi confirmado.`,
+      title: result.autoDelivered ? "Produto entregue" : "Pagamento confirmado",
+      body: result.autoDelivered
+        ? `Seu pagamento de “${title}” foi confirmado e o produto já está disponível no chat.`
+        : `Seu pagamento de “${title}” foi confirmado.`,
       href,
-      meta: { orderId: result.orderId },
+      meta: { orderId: result.orderId, orderCode: result.orderCode },
     });
     void notifyUser({
       userId: result.sellerId,
       type: "ORDER",
-      title: "Nova venda paga",
-      body: `Você vendeu “${title}”. Entregue o produto ao comprador.`,
+      title: result.autoDelivered ? "Venda entregue automaticamente" : "Nova venda paga",
+      body: result.autoDelivered
+        ? `Você vendeu “${title}”. A entrega automática foi enviada ao comprador.`
+        : `Você vendeu “${title}”. Entregue o produto ao comprador.`,
       href: routes.dashboardSales,
-      meta: { orderId: result.orderId },
+      meta: { orderId: result.orderId, orderCode: result.orderCode },
     });
   }
 

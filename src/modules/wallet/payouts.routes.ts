@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   creditWallet,
+  lockWalletUser,
   withRlsTransaction,
   withServiceTransaction,
   type RlsActor,
@@ -9,9 +10,13 @@ import {
 import { asyncHandler } from "../../lib/async-handler";
 import { AppError } from "../../lib/errors";
 import { sanitizeUserText } from "../../lib/sanitize";
+import { decryptTotpSecret, verifyTotpCode } from "../../lib/totp";
 import { requireAuth } from "../../middleware/auth";
+import { payoutCreateLimiter } from "../../middleware/rate-limit";
+import { createWithPublicCode } from "../../lib/create-with-code";
 import { routes } from "../conversations/hrefs";
 import { notifyUser } from "../conversations/notifications.notify";
+import { userHas2fa } from "../auth/two-factor.shared";
 
 export const payoutsRouter = Router();
 
@@ -29,6 +34,8 @@ function formatBrl(cents: number) {
 const createPayoutSchema = z.object({
   amountCents: z.number().int().min(500).max(5_000_000),
   pixKey: z.string().trim().min(3).max(140).optional(),
+  /** Required when the account has 2FA enabled. */
+  totpCode: z.string().trim().min(6).max(12).optional(),
 });
 
 payoutsRouter.get(
@@ -43,6 +50,7 @@ payoutsRouter.get(
         take: 50,
         select: {
           id: true,
+          code: true,
           amountCents: true,
           pixKey: true,
           status: true,
@@ -58,17 +66,48 @@ payoutsRouter.get(
 payoutsRouter.post(
   "/",
   requireAuth,
+  payoutCreateLimiter,
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
     const body = createPayoutSchema.parse(req.body);
 
     const payout = await withServiceTransaction(async (tx) => {
+      await lockWalletUser(tx, actor.id);
+
       const user = await tx.user.findUnique({
         where: { id: actor.id },
-        select: { id: true, pixKey: true },
+        select: {
+          id: true,
+          pixKey: true,
+          kycStatus: true,
+          totpSecret: true,
+          totpEnabledAt: true,
+        },
       });
       if (!user) {
         throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
+      }
+
+      if (user.kycStatus !== "APPROVED") {
+        throw new AppError(
+          403,
+          "Verifique sua identidade para solicitar saques.",
+          "KYC_REQUIRED",
+        );
+      }
+
+      if (userHas2fa(user)) {
+        if (!body.totpCode) {
+          throw new AppError(
+            403,
+            "Confirme o saque com o código 2FA.",
+            "2FA_REQUIRED",
+          );
+        }
+        const plain = decryptTotpSecret(user.totpSecret!);
+        if (!verifyTotpCode(plain, body.totpCode)) {
+          throw new AppError(400, "Código 2FA inválido", "2FA_INVALID_CODE");
+        }
       }
 
       const pixKey =
@@ -109,28 +148,34 @@ payoutsRouter.post(
         );
       }
 
-      const created = await tx.payout.create({
-        data: {
-          userId: actor.id,
-          amountCents: body.amountCents,
-          pixKey,
-          status: "REQUESTED",
-        },
-        select: {
-          id: true,
-          amountCents: true,
-          pixKey: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-        },
+      const created = await createWithPublicCode({
+        kind: "PAY",
+        create: (code) =>
+          tx.payout.create({
+            data: {
+              code,
+              userId: actor.id,
+              amountCents: body.amountCents,
+              pixKey,
+              status: "REQUESTED",
+            },
+            select: {
+              id: true,
+              code: true,
+              amountCents: true,
+              pixKey: true,
+              status: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          }),
       });
 
       await creditWallet(tx, {
         userId: actor.id,
         type: "DEBIT_PAYOUT",
         amountCents: -body.amountCents,
-        description: `Saque PIX solicitado (${created.id})`,
+        description: `Saque PIX solicitado (${created.code})`,
       });
 
       if (body.pixKey !== undefined && body.pixKey !== user.pixKey) {
@@ -149,7 +194,11 @@ payoutsRouter.post(
       title: "Saque solicitado",
       body: `Solicitação de ${formatBrl(payout.amountCents)} enviada. Acompanhe em Saques.`,
       href: routes.dashboardWithdrawals,
-      meta: { payoutId: payout.id, amountCents: payout.amountCents },
+      meta: {
+        payoutId: payout.id,
+        payoutCode: payout.code,
+        amountCents: payout.amountCents,
+      },
     });
 
     res.status(201).json({ payout });

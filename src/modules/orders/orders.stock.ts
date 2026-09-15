@@ -1,13 +1,23 @@
 import type { Prisma } from "@prisma/client";
 import { clearListingReservation } from "./orders.reserve";
+import {
+  releaseAutoStockForOrder,
+  wasAutoStockConsumed,
+} from "../listings/delivery-stock.service";
 
 type Tx = Prisma.TransactionClient;
 
 /** Restore one reserved stock unit (cancel / expire / refund). */
 export async function restoreOrderStock(
   tx: Tx,
-  order: { listingId: string; offerId: string | null },
+  order: { id: string; listingId: string; offerId: string | null },
 ) {
+  if (await wasAutoStockConsumed(tx, order.id)) {
+    return;
+  }
+
+  await releaseAutoStockForOrder(tx, order.id);
+
   if (order.offerId) {
     await tx.listingOffer.update({
       where: { id: order.offerId },

@@ -12,8 +12,9 @@ export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
-  // Square Cloud sits behind a reverse proxy that sets X-Forwarded-For.
-  app.set("trust proxy", 1);
+  // Behind reverse proxy (Square Cloud, nginx, Cloudflare). Hops from TRUST_PROXY.
+  // Wrong value breaks rate-limit / IP allowlist (clients can spoof X-Forwarded-For).
+  app.set("trust proxy", env.TRUST_PROXY);
 
   app.use(
     helmet({
@@ -33,7 +34,17 @@ export function createApp() {
 
   app.use(
     cors({
-      origin: env.CORS_ORIGIN.split(",").map((origin) => origin.trim()),
+      origin(origin, callback) {
+        const allowed = [
+          ...env.CORS_ORIGIN.split(",").map((o) => o.trim()),
+          ...env.ADMIN_CORS_ORIGIN.split(",").map((o) => o.trim()),
+        ].filter(Boolean);
+        if (!origin || allowed.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(null, false);
+      },
       credentials: true,
     }),
   );

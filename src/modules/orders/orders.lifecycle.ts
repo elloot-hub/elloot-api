@@ -22,7 +22,7 @@ export async function completeOrderTx(
   const order = await lockOrderForUpdate(tx, orderId);
   if (!order) throw new AppError(404, "Order not found", "ORDER_NOT_FOUND");
   if (order.status === "COMPLETED") {
-    return tx.order.findUniqueOrThrow({ where: { id: orderId } });
+    return tx.order.findUniqueOrThrow({ where: { id: order.id } });
   }
 
   const okStatuses = options?.allowDisputed
@@ -43,7 +43,7 @@ export async function completeOrderTx(
       orderId: order.id,
       type: "CREDIT_SALE",
       amountCents: credit,
-      description: `Sale released for order ${order.id}`,
+      description: `Venda liberada — pedido ${order.code}`,
     });
   }
 
@@ -79,7 +79,7 @@ export async function refundOrderTx(tx: Tx, orderId: string) {
   const order = await lockOrderForUpdate(tx, orderId);
   if (!order) throw new AppError(404, "Order not found", "ORDER_NOT_FOUND");
   if (order.status === "REFUNDED") {
-    return tx.order.findUniqueOrThrow({ where: { id: orderId } });
+    return tx.order.findUniqueOrThrow({ where: { id: order.id } });
   }
   if (!["PAID", "DELIVERED", "DISPUTED"].includes(order.status)) {
     throw new AppError(409, "Order cannot be refunded", "INVALID_STATUS");
@@ -94,7 +94,7 @@ export async function refundOrderTx(tx: Tx, orderId: string) {
       orderId: order.id,
       type: "REFUND",
       amountCents: order.amountCents,
-      description: `Refund for order ${order.id}`,
+      description: `Reembolso — pedido ${order.code}`,
     });
   }
 
@@ -142,7 +142,7 @@ export async function settlePartialOrderTx(
       orderId: order.id,
       type: "CREDIT_SALE",
       amountCents: sellerNet,
-      description: `Partial release for order ${order.id}`,
+      description: `Liberação parcial — pedido ${order.code}`,
     });
   }
 
@@ -155,7 +155,7 @@ export async function settlePartialOrderTx(
       orderId: order.id,
       type: "REFUND",
       amountCents: buyerRefund,
-      description: `Partial refund for order ${order.id}`,
+      description: `Reembolso parcial — pedido ${order.code}`,
     });
   }
 

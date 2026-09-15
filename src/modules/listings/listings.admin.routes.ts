@@ -4,7 +4,6 @@ import { withRlsTransaction, type RlsActor } from "../../databases";
 import { asyncHandler } from "../../lib/async-handler";
 import { AppError } from "../../lib/errors";
 import { routeParam } from "../../lib/route-param";
-import { requireAuth, requireRole } from "../../middleware/auth";
 import {
   approveModerationTx,
   buildProposedSnapshot,
@@ -25,8 +24,13 @@ function actorOf(req: { user?: RlsActor }): RlsActor {
 }
 
 const listQuerySchema = z.object({
-  status: z.enum(["PENDING", "APPROVED", "REJECTED"]).optional().default("PENDING"),
-  type: z.enum(["INITIAL", "REVISION"]).optional(),
+  status: z
+    .enum(["PENDING", "APPROVED", "REJECTED", "ALL"])
+    .optional()
+    .default("PENDING"),
+  type: z.enum(["INITIAL", "REVISION", "ALL"]).optional().default("ALL"),
+  q: z.string().trim().max(120).optional(),
+  sort: z.enum(["oldest", "newest", "price"]).optional().default("oldest"),
   take: z.coerce.number().int().min(1).max(100).optional().default(30),
   cursor: z.string().optional(),
 });
@@ -35,24 +39,48 @@ const rejectSchema = z.object({
   reviewNote: z.string().trim().min(5).max(1000),
 });
 
-listingsAdminRouter.use(requireAuth, requireRole("ADMIN"));
-
 /** Moderation queue stats for admin dashboard widgets. */
 listingsAdminRouter.get(
   "/moderation/stats",
   asyncHandler(async (_req, res) => {
     const actor = actorOf(_req);
+    const cutoff24h = new Date(Date.now() - 24 * 3_600_000);
+
     const stats = await withRlsTransaction({ actor }, async (tx) => {
-      const [pending, initial, revision] = await Promise.all([
-        tx.listingModerationQueue.count({ where: { status: "PENDING" } }),
-        tx.listingModerationQueue.count({
-          where: { status: "PENDING", type: "INITIAL" },
-        }),
-        tx.listingModerationQueue.count({
-          where: { status: "PENDING", type: "REVISION" },
-        }),
-      ]);
-      return { pending, initial, revision };
+      const [pending, initial, revision, approved, rejected, pendingOver24h, pendingRows] =
+        await Promise.all([
+          tx.listingModerationQueue.count({ where: { status: "PENDING" } }),
+          tx.listingModerationQueue.count({
+            where: { status: "PENDING", type: "INITIAL" },
+          }),
+          tx.listingModerationQueue.count({
+            where: { status: "PENDING", type: "REVISION" },
+          }),
+          tx.listingModerationQueue.count({ where: { status: "APPROVED" } }),
+          tx.listingModerationQueue.count({ where: { status: "REJECTED" } }),
+          tx.listingModerationQueue.count({
+            where: { status: "PENDING", createdAt: { lte: cutoff24h } },
+          }),
+          tx.listingModerationQueue.findMany({
+            where: { status: "PENDING" },
+            select: { listing: { select: { priceCents: true } } },
+          }),
+        ]);
+
+      const pendingAmountCents = pendingRows.reduce(
+        (sum, row) => sum + row.listing.priceCents,
+        0,
+      );
+
+      return {
+        pending,
+        initial,
+        revision,
+        approved,
+        rejected,
+        pendingOver24h,
+        pendingAmountCents,
+      };
     });
     res.json({ stats });
   }),
@@ -64,15 +92,62 @@ listingsAdminRouter.get(
   asyncHandler(async (req, res) => {
     const query = listQuerySchema.parse(req.query);
     const actor = actorOf(req);
+    const q = query.q?.trim();
 
     const result = await withRlsTransaction({ actor }, async (tx) => {
+      const orderBy =
+        query.sort === "newest"
+          ? ([{ createdAt: "desc" as const }, { id: "desc" as const }] as const)
+          : query.sort === "price"
+            ? ([
+                { listing: { priceCents: "desc" as const } },
+                { id: "desc" as const },
+              ] as const)
+            : ([{ createdAt: "asc" as const }, { id: "asc" as const }] as const);
+
       const rows = await tx.listingModerationQueue.findMany({
         where: {
-          status: query.status,
-          ...(query.type ? { type: query.type } : {}),
-          ...(query.cursor ? { id: { lt: query.cursor } } : {}),
+          ...(query.status !== "ALL" ? { status: query.status } : {}),
+          ...(query.type !== "ALL" ? { type: query.type } : {}),
+          ...(q
+            ? {
+                OR: [
+                  { id: { contains: q, mode: "insensitive" } },
+                  {
+                    listing: {
+                      code: { contains: q, mode: "insensitive" },
+                    },
+                  },
+                  {
+                    listing: {
+                      title: { contains: q, mode: "insensitive" },
+                    },
+                  },
+                  {
+                    listing: {
+                      seller: {
+                        OR: [
+                          { email: { contains: q, mode: "insensitive" } },
+                          { name: { contains: q, mode: "insensitive" } },
+                        ],
+                      },
+                    },
+                  },
+                  {
+                    listing: {
+                      category: {
+                        name: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                ],
+              }
+            : {}),
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: [...orderBy],
+        ...(query.cursor
+          ? { cursor: { id: query.cursor }, skip: 1 }
+          : {}),
         take: query.take + 1,
         select: moderationQueueListSelect,
       });

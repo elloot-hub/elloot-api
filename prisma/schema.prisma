@@ -7,6 +7,622 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id                      String                   @id @default(cuid())
+  email                   String                   @unique
+  passwordHash            String?
+  name                    String?
+  /// Public profile handle (`/profile/:username`). Unique, lowercase. Derived from first name.
+  username                String?                  @unique
+  /// Public bio shown on `/profile/:username`.
+  bio                     String?
+  /// Last time display name was changed (cooldown for renames).
+  nameChangedAt           DateTime?
+  avatarUrl               String?
+  role                    Role                     @default(BUYER)
+  kycStatus               KycStatus                @default(NONE)
+  pixKey                  String?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  /// Last authenticated activity (online / visto há…).
+  lastSeenAt              DateTime?
+  emailVerifiedAt         DateTime?
+  phone                   String?
+  phoneVerifiedAt         DateTime?
+  /// Cached GGMAX-style reputation points (updated from reviews/sales).
+  reputationScore         Int                      @default(0)
+  /// Encrypted TOTP secret when 2FA is enabled (or pending setup).
+  totpSecret              String?
+  /// When 2FA was confirmed active.
+  totpEnabledAt           DateTime?
+  accounts                Account[]
+  auditLogs               AuditLog[]
+  disputesOpened          Dispute[]                @relation("DisputeOpener")
+  favorites               Favorite[]
+  listingEventsViewed     ListingEvent[]           @relation("ListingEventViewer")
+  listingModerations      ListingModerationQueue[] @relation("ListingModerationReviews")
+  questionsAnswered       ListingQuestion[]        @relation("QuestionAnswerer")
+  questionsAsked          ListingQuestion[]        @relation("QuestionAsker")
+  listings                Listing[]                @relation("SellerListings")
+  mediaAssets             MediaAsset[]
+  messages                Message[]
+  notificationPreferences NotificationPreference[]
+  notifications           Notification[]
+  ordersAsBuyer           Order[]                  @relation("BuyerOrders")
+  ordersAsSeller          Order[]                  @relation("SellerOrders")
+  payouts                 Payout[]
+  pushSubscriptions       PushSubscription[]
+  authSessions            AuthSession[]
+  reviewsWritten          Review[]                 @relation("BuyerReviews")
+  reviewsReceived         Review[]                 @relation("SellerReviews")
+  ledgerEntries           WalletLedger[]
+  kycSubmissions          KycSubmission[]
+
+  @@map("users")
+}
+
+/// Identity verification request (documents for withdrawals).
+model KycSubmission {
+  id             String    @id @default(cuid())
+  userId         String
+  fullName       String
+  documentNumber String
+  frontAssetId   String
+  backAssetId    String
+  selfieAssetId  String
+  status         KycStatus @default(PENDING)
+  reviewNote     String?
+  reviewedAt     DateTime?
+  reviewedById   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("kyc_submissions")
+}
+
+model AuthSession {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenJti   String    @unique
+  userAgent  String?
+  ip         String?
+  lastSeenAt DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@map("auth_sessions")
+}
+
+model Account {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+/// Hierarchical marketplace category (games, subscriptions, digital services, etc.)
+model Category {
+  id                     String         @id @default(cuid())
+  slug                   String
+  name                   String
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  imageUrl               String?
+  acceleratedRelease     Boolean        @default(false)
+  balanceReleaseDays     Int            @default(7)
+  /// Comma-separated external child ids (deeper taxonomy), when known
+  childrenExternalIds    String?
+  defaultOrderBy         String         @default("best-selling")
+  descriptionSeo         String?
+  /// External id when imported (e.g. GGMAX)
+  externalId             Int?           @unique
+  hasWebp                Boolean        @default(false)
+  iconUrl                String?
+  /// Phosphor icon name from react-icons/pi, e.g. PiGameController
+  icon                   String?
+  /// e.g. { "no_plan": 30, "vip_basic": 60, "vip_premium": 90 }
+  interventionDeadlines  Json?
+  isAdult                Boolean        @default(false)
+  isFeatured             Boolean        @default(false)
+  isNoindex              Boolean?
+  keywords               String?
+  orderInstruction       String?
+  parentId               String?
+  requiredUserValidation Boolean        @default(false)
+  showInMenu             Boolean        @default(false)
+  /// Absolute path e.g. /jogos/free-fire
+  slugPath               String         @unique
+  slugSeo                String?
+  sortOrder              Int            @default(0)
+  status                 CategoryStatus @default(ACTIVE)
+  subtitleSeo            String?
+  templateDescription    String?
+  titleSeo               String?
+  parent                 Category?      @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children               Category[]     @relation("CategoryTree")
+  listings               Listing[]
+
+  @@index([parentId, status])
+  @@index([status, showInMenu])
+  @@index([status, isFeatured])
+  @@index([slug])
+  @@map("categories")
+}
+
+/// Uploaded binary tracked by the media CDN layer.
+model MediaAsset {
+  id             String          @id @default(cuid())
+  ownerId        String?
+  /// Storage object key (never trust client paths)
+  key            String          @unique
+  /// Public CDN URL or API content URL
+  url            String
+  mimeType       String
+  sizeBytes      Int
+  width          Int?
+  height         Int?
+  purpose        MediaPurpose    @default(GENERAL)
+  visibility     MediaVisibility @default(PUBLIC)
+  originalName   String?
+  checksumSha256 String?
+  deletedAt      DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  owner          User?           @relation(fields: [ownerId], references: [id])
+
+  @@index([ownerId, createdAt])
+  @@index([purpose, deletedAt])
+  @@map("media_assets")
+}
+
+model Listing {
+  id                   String                   @id @default(cuid())
+  /// Public reference for URLs and support (LST-YYMM-XXXXXX).
+  code                 String                   @unique
+  sellerId             String
+  categoryId           String
+  title                String
+  description          String
+  priceCents           Int
+  status               ListingStatus            @default(DRAFT)
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  listingModel         ListingModel             @default(NORMAL)
+  /// Seller-facing product kind: CONTA | ITEM | SERVICO | GOLD | OUTROS
+  productType          String?
+  /// Stock for NORMAL/SERVICE. DYNAMIC uses per-offer stock.
+  stockQuantity        Int                      @default(1)
+  /// How the seller fulfills: manual chat delivery vs automatic codes/keys.
+  deliveryMode         DeliveryMode             @default(MANUAL)
+  /// Units fulfilled via completed orders.
+  unitsSold            Int                      @default(0)
+  /// Completed order count (sales).
+  salesCount           Int                      @default(0)
+  /// Admin rejection reason (visible to seller).
+  moderationNote       String?
+  submittedForReviewAt DateTime?
+  favorites            Favorite[]
+  events               ListingEvent[]
+  media                ListingMedia[]
+  moderationQueue      ListingModerationQueue[]
+  offers               ListingOffer[]
+  questions            ListingQuestion[]
+  deliveryStockItems   DeliveryStockItem[]
+  category             Category                 @relation(fields: [categoryId], references: [id])
+  seller               User                     @relation("SellerListings", fields: [sellerId], references: [id])
+  orders               Order[]
+  reviews              Review[]
+
+  @@index([status, categoryId])
+  @@index([sellerId])
+  @@map("listings")
+}
+
+/// Funnel analytics: listing page views and purchase intents (cart / checkout).
+model ListingEvent {
+  id           String           @id @default(cuid())
+  listingId    String
+  sellerId     String
+  type         ListingEventType
+  /// Logged-in viewer when available.
+  viewerUserId String?
+  /// Opaque browser key for anonymous / dedupe (unique visits).
+  visitorKey   String
+  /// Snapshot value for PURCHASE_INTENT (listing/offer price).
+  amountCents  Int?
+  createdAt    DateTime         @default(now())
+  listing      Listing          @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  viewer       User?            @relation("ListingEventViewer", fields: [viewerUserId], references: [id])
+
+  @@index([sellerId, type, createdAt])
+  @@index([listingId, type, createdAt])
+  @@index([listingId, visitorKey, type, createdAt])
+  @@index([listingId, type, createdAt], map: "listing_events_listing_type_created_idx")
+  @@index([listingId, visitorKey, type, createdAt], map: "listing_events_listing_visitor_type_created_idx")
+  @@index([sellerId, type, createdAt], map: "listing_events_seller_type_created_idx")
+  @@map("listing_events")
+}
+
+/// Options inside a DYNAMIC listing (GGMAX-style multi-item ad).
+model ListingOffer {
+  id            String       @id @default(cuid())
+  listingId     String
+  title         String
+  priceCents    Int
+  stockQuantity Int          @default(1)
+  sortOrder     Int          @default(0)
+  createdAt     DateTime     @default(now())
+  deliveryMode  DeliveryMode @default(MANUAL)
+  deliveryStockItems DeliveryStockItem[]
+  listing       Listing      @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  orders        Order[]
+
+  @@index([listingId])
+  @@map("listing_offers")
+}
+
+model ListingMedia {
+  id        String   @id @default(cuid())
+  listingId String
+  url       String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+  @@map("listing_media")
+}
+
+/// Admin review queue for first publish and content revisions on live listings.
+model ListingModerationQueue {
+  id            String                  @id @default(cuid())
+  listingId     String
+  type          ListingModerationType
+  status        ListingModerationStatus @default(PENDING)
+  /// Proposed changes for REVISION; {} for INITIAL (snapshot taken at review time).
+  payload       Json                    @default("{}")
+  changedFields String[]                @default([])
+  reviewNote    String?
+  reviewedById  String?
+  reviewedAt    DateTime?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  listing       Listing                 @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  reviewedBy    User?                   @relation("ListingModerationReviews", fields: [reviewedById], references: [id])
+
+  @@index([status, createdAt])
+  @@index([listingId, status])
+  @@index([listingId, status], map: "listing_moderation_queue_listing_status_idx")
+  @@index([status, createdAt], map: "listing_moderation_queue_status_created_idx")
+  @@map("listing_moderation_queue")
+}
+
+enum DeliveryStockStatus {
+  AVAILABLE
+  RESERVED
+  CONSUMED
+}
+
+/// Auto-delivery inventory: one row per key/credential line.
+model DeliveryStockItem {
+  id        String              @id @default(cuid())
+  listingId String?
+  offerId   String?
+  content   String
+  status    DeliveryStockStatus @default(AVAILABLE)
+  orderId   String?             @unique
+  sortOrder Int                 @default(0)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  listing   Listing?            @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  offer     ListingOffer?       @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  order     Order?              @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([listingId, status])
+  @@index([offerId, status])
+  @@map("delivery_stock_items")
+}
+
+model Order {
+  id            String         @id @default(cuid())
+  /// Public reference for URLs and support (ORD-YYMM-XXXXXX).
+  code          String         @unique
+  listingId     String
+  buyerId       String
+  sellerId      String
+  amountCents   Int
+  feeCents      Int
+  status        OrderStatus    @default(PENDING_PAYMENT)
+  paidAt        DateTime?
+  deliveredAt   DateTime?
+  /// Delivered product payload (keys, logins) shown in buyer chat.
+  deliveryContent String?
+  completedAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  /// Set when buying a DYNAMIC listing offer.
+  offerId       String?
+  conversation  Conversation?
+  dispute       Dispute?
+  escrowHold    EscrowHold?
+  buyer         User           @relation("BuyerOrders", fields: [buyerId], references: [id])
+  listing       Listing        @relation(fields: [listingId], references: [id])
+  offer         ListingOffer?  @relation(fields: [offerId], references: [id])
+  seller        User           @relation("SellerOrders", fields: [sellerId], references: [id])
+  payment       Payment?
+  review        Review?
+  deliveryStockItem DeliveryStockItem?
+  ledgerEntries WalletLedger[]
+
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([status])
+  @@index([offerId])
+  @@map("orders")
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  orderId     String        @unique
+  provider    String
+  providerRef String
+  status      PaymentStatus @default(PENDING)
+  amountCents Int
+  rawWebhook  Json?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  order       Order         @relation(fields: [orderId], references: [id])
+
+  @@unique([provider, providerRef])
+  @@map("payments")
+}
+
+model EscrowHold {
+  id          String    @id @default(cuid())
+  orderId     String    @unique
+  amountCents Int
+  releaseAt   DateTime
+  releasedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  order       Order     @relation(fields: [orderId], references: [id])
+
+  @@index([releaseAt])
+  @@map("escrow_holds")
+}
+
+model Conversation {
+  id                 String                       @id @default(cuid())
+  orderId            String                       @unique
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  /// Denormalized for inbox sorting / preview (chat-ready).
+  lastMessageAt      DateTime?
+  lastMessagePreview String?
+  /// Fila de moderação no painel admin.
+  moderationStatus   ConversationModerationStatus @default(OPEN)
+  reportReason       String?
+  resolvedAt         DateTime?
+  /// Última vez que a moderação abriu a thread (unread no admin).
+  adminLastReadAt    DateTime?
+  /// Última vez que o comprador abriu/leu a thread (recibos no admin).
+  buyerLastReadAt    DateTime?
+  /// Última vez que o vendedor abriu/leu a thread (recibos no admin).
+  sellerLastReadAt   DateTime?
+  order              Order                        @relation(fields: [orderId], references: [id])
+  messages           Message[]
+
+  @@index([lastMessageAt])
+  @@index([moderationStatus])
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  senderId       String
+  body           String
+  createdAt      DateTime     @default(now())
+  /// Client-generated id for optimistic UI / dedupe (chat-ready).
+  clientId       String?
+  readAt         DateTime?
+  /// Nota interna da moderação — nunca entregue ao comprador/vendedor.
+  internal       Boolean      @default(false)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User         @relation(fields: [senderId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@index([conversationId, clientId])
+  @@map("messages")
+}
+
+model Dispute {
+  id         String             @id @default(cuid())
+  /// Public reference for URLs and support (DSP-YYMM-XXXXXX).
+  code       String             @unique
+  orderId    String             @unique
+  openedById String
+  reason     String
+  status     DisputeStatus      @default(OPEN)
+  resolution DisputeResolution?
+  notes      String?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  openedBy   User               @relation("DisputeOpener", fields: [openedById], references: [id])
+  order      Order              @relation(fields: [orderId], references: [id])
+
+  @@index([status])
+  @@map("disputes")
+}
+
+model WalletLedger {
+  id           String     @id @default(cuid())
+  userId       String
+  orderId      String?
+  type         LedgerType
+  amountCents  Int
+  balanceAfter Int
+  description  String?
+  createdAt    DateTime   @default(now())
+  order        Order?     @relation(fields: [orderId], references: [id])
+  user         User       @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@map("wallet_ledger")
+}
+
+model Payout {
+  id          String       @id @default(cuid())
+  /// Public reference for URLs and support (PAY-YYMM-XXXXXX).
+  code        String       @unique
+  userId      String
+  amountCents Int
+  pixKey      String
+  status      PayoutStatus @default(REQUESTED)
+  providerRef String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  user        User         @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@map("payouts")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  meta       Json?
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Buyer review after a completed order (feeds seller reputation).
+model Review {
+  id        String   @id @default(cuid())
+  orderId   String   @unique
+  listingId String
+  sellerId  String
+  buyerId   String
+  /// 1–5 stars
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+  buyer     User     @relation("BuyerReviews", fields: [buyerId], references: [id])
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  seller    User     @relation("SellerReviews", fields: [sellerId], references: [id])
+
+  @@index([sellerId, createdAt])
+  @@index([listingId, createdAt])
+  @@map("reviews")
+}
+
+/// Public Q&A on a listing (TrustMarket / GGMAX style).
+model ListingQuestion {
+  id           String    @id @default(cuid())
+  listingId    String
+  askerId      String
+  body         String
+  answer       String?
+  answeredAt   DateTime?
+  answeredById String?
+  /// Hidden / replaced by moderation.
+  moderated    Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  answeredBy   User?     @relation("QuestionAnswerer", fields: [answeredById], references: [id])
+  asker        User      @relation("QuestionAsker", fields: [askerId], references: [id])
+  listing      Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId, createdAt])
+  @@index([askerId])
+  @@map("listing_questions")
+}
+
+/// In-app notifications (socket push + REST inbox).
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  /// MESSAGE | ORDER | DISPUTE | SYSTEM
+  type      String
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?
+  meta      Json?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+/// Per-category in-app / browser-push toggles.
+model NotificationPreference {
+  id        String   @id @default(cuid())
+  userId    String
+  /// MESSAGE | ORDER | DISPUTE | QUESTION | REVIEW | SYSTEM
+  category  String
+  inApp     Boolean  @default(true)
+  push      Boolean  @default(true)
+  updatedAt DateTime @default(now()) @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category])
+  @@index([userId])
+  @@map("notification_preferences")
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  listingId String
+  createdAt DateTime @default(now())
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, listingId])
+  @@unique([userId, listingId], map: "favorites_user_listing_uidx")
+  @@index([userId, createdAt])
+  @@index([userId, createdAt], map: "favorites_user_created_idx")
+  @@map("favorites")
+}
+
 enum Role {
   BUYER
   SELLER
@@ -22,12 +638,12 @@ enum KycStatus {
 
 enum ListingStatus {
   DRAFT
-  PENDING_REVIEW
   ACTIVE
   PAUSED
   SOLD
-  REJECTED
   REMOVED
+  PENDING_REVIEW
+  REJECTED
 }
 
 enum ListingModerationType {
@@ -72,6 +688,12 @@ enum DisputeStatus {
   CANCELLED
 }
 
+enum ConversationModerationStatus {
+  OPEN
+  REPORTED
+  RESOLVED
+}
+
 enum DisputeResolution {
   RELEASE_TO_SELLER
   REFUND_BUYER
@@ -110,145 +732,6 @@ enum MediaVisibility {
   PRIVATE
 }
 
-model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  passwordHash    String?
-  name            String?
-  avatarUrl       String?
-  role            Role      @default(BUYER)
-  kycStatus       KycStatus @default(NONE)
-  pixKey          String?
-  /// Last authenticated activity (online / visto há…).
-  lastSeenAt      DateTime?
-  emailVerifiedAt DateTime?
-  phone           String?
-  phoneVerifiedAt DateTime?
-  /// Cached GGMAX-style reputation points (updated from reviews/sales).
-  reputationScore Int       @default(0)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  accounts            Account[]
-  listings            Listing[]          @relation("SellerListings")
-  ordersAsBuyer       Order[]            @relation("BuyerOrders")
-  ordersAsSeller      Order[]            @relation("SellerOrders")
-  messages            Message[]
-  disputesOpened      Dispute[]          @relation("DisputeOpener")
-  ledgerEntries       WalletLedger[]
-  payouts             Payout[]
-  auditLogs           AuditLog[]
-  mediaAssets         MediaAsset[]
-  reviewsReceived     Review[]           @relation("SellerReviews")
-  reviewsWritten      Review[]           @relation("BuyerReviews")
-  questionsAsked      ListingQuestion[]  @relation("QuestionAsker")
-  questionsAnswered   ListingQuestion[]  @relation("QuestionAnswerer")
-  notifications            Notification[]
-  notificationPreferences  NotificationPreference[]
-  pushSubscriptions        PushSubscription[]
-  listingModerations       ListingModerationQueue[] @relation("ListingModerationReviews")
-  listingEventsViewed      ListingEvent[]     @relation("ListingEventViewer")
-  favorites                Favorite[]
-
-  @@map("users")
-}
-
-model Account {
-  id                String   @id @default(cuid())
-  userId            String
-  provider          String
-  providerAccountId String
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
-  @@index([userId])
-  @@map("accounts")
-}
-
-/// Hierarchical marketplace category (games, subscriptions, digital services, etc.)
-model Category {
-  id       String  @id @default(cuid())
-  parentId String?
-  /// External id when imported (e.g. GGMAX)
-  externalId Int?  @unique
-
-  name String
-  slug String
-  /// Absolute path e.g. /jogos/free-fire
-  slugPath String @unique
-
-  status CategoryStatus @default(ACTIVE)
-
-  orderInstruction   String? @db.Text
-  showInMenu         Boolean @default(false)
-  acceleratedRelease Boolean @default(false)
-  /// e.g. { "no_plan": 30, "vip_basic": 60, "vip_premium": 90 }
-  interventionDeadlines Json?
-  isFeatured         Boolean @default(false)
-  isAdult            Boolean @default(false)
-
-  imageUrl String?
-  iconUrl  String?
-  hasWebp  Boolean @default(false)
-
-  templateDescription String? @db.Text
-
-  balanceReleaseDays     Int     @default(7)
-  keywords               String? @db.Text
-  descriptionSeo         String? @db.Text
-  titleSeo               String?
-  subtitleSeo            String?
-  slugSeo                String?
-  defaultOrderBy         String  @default("best-selling")
-  /// Comma-separated external child ids (deeper taxonomy), when known
-  childrenExternalIds    String?
-  requiredUserValidation Boolean @default(false)
-  isNoindex              Boolean?
-
-  sortOrder Int @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children Category[] @relation("CategoryTree")
-  listings Listing[]
-
-  @@index([parentId, status])
-  @@index([status, showInMenu])
-  @@index([status, isFeatured])
-  @@index([slug])
-  @@map("categories")
-}
-
-/// Uploaded binary tracked by the media CDN layer.
-model MediaAsset {
-  id             String          @id @default(cuid())
-  ownerId        String?
-  /// Storage object key (never trust client paths)
-  key            String          @unique
-  /// Public CDN URL or API content URL
-  url            String
-  mimeType       String
-  sizeBytes      Int
-  width          Int?
-  height         Int?
-  purpose        MediaPurpose    @default(GENERAL)
-  visibility     MediaVisibility @default(PUBLIC)
-  originalName   String?
-  checksumSha256 String?
-  deletedAt      DateTime?
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  owner          User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
-
-  @@index([ownerId, createdAt])
-  @@index([purpose, deletedAt])
-  @@map("media_assets")
-}
-
 enum ListingModel {
   NORMAL
   DYNAMIC
@@ -258,389 +741,4 @@ enum ListingModel {
 enum DeliveryMode {
   MANUAL
   AUTO
-}
-
-model Listing {
-  id            String        @id @default(cuid())
-  sellerId      String
-  categoryId    String
-  title         String
-  description   String
-  priceCents    Int
-  /// Stock for NORMAL/SERVICE. DYNAMIC uses per-offer stock.
-  stockQuantity Int           @default(1)
-  /// Units fulfilled via completed orders.
-  unitsSold     Int           @default(0)
-  /// Completed order count (sales).
-  salesCount    Int           @default(0)
-  /// Seller-facing product kind: CONTA | ITEM | SERVICO | GOLD | OUTROS
-  productType   String?
-  listingModel  ListingModel  @default(NORMAL)
-  /// How the seller fulfills: manual chat delivery vs automatic codes/keys.
-  deliveryMode  DeliveryMode  @default(MANUAL)
-  status        ListingStatus @default(DRAFT)
-  /// Admin rejection reason (visible to seller).
-  moderationNote       String?
-  submittedForReviewAt DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-
-  seller           User                     @relation("SellerListings", fields: [sellerId], references: [id])
-  category         Category                 @relation(fields: [categoryId], references: [id])
-  media            ListingMedia[]
-  offers           ListingOffer[]
-  orders           Order[]
-  reviews          Review[]
-  questions        ListingQuestion[]
-  moderationQueue  ListingModerationQueue[]
-  events           ListingEvent[]
-  favorites        Favorite[]
-
-  @@index([status, categoryId])
-  @@index([sellerId])
-  @@map("listings")
-}
-
-/// Funnel analytics: listing page views and purchase intents (cart / checkout).
-model ListingEvent {
-  id           String           @id @default(cuid())
-  listingId    String
-  sellerId     String
-  type         ListingEventType
-  /// Logged-in viewer when available.
-  viewerUserId String?
-  /// Opaque browser key for anonymous / dedupe (unique visits).
-  visitorKey   String
-  /// Snapshot value for PURCHASE_INTENT (listing/offer price).
-  amountCents  Int?
-  createdAt    DateTime         @default(now())
-
-  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  viewer  User?   @relation("ListingEventViewer", fields: [viewerUserId], references: [id], onDelete: SetNull)
-
-  @@index([sellerId, type, createdAt])
-  @@index([listingId, type, createdAt])
-  @@index([listingId, visitorKey, type, createdAt])
-  @@map("listing_events")
-}
-
-/// Options inside a DYNAMIC listing (GGMAX-style multi-item ad).
-model ListingOffer {
-  id            String       @id @default(cuid())
-  listingId     String
-  title         String
-  priceCents    Int
-  stockQuantity Int          @default(1)
-  deliveryMode  DeliveryMode @default(MANUAL)
-  sortOrder     Int          @default(0)
-  createdAt     DateTime     @default(now())
-
-  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  orders  Order[]
-
-  @@index([listingId])
-  @@map("listing_offers")
-}
-
-model ListingMedia {
-  id        String   @id @default(cuid())
-  listingId String
-  url       String
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
-  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
-
-  @@index([listingId])
-  @@map("listing_media")
-}
-
-/// Admin review queue for first publish and content revisions on live listings.
-model ListingModerationQueue {
-  id            String                  @id @default(cuid())
-  listingId     String
-  type          ListingModerationType
-  status        ListingModerationStatus @default(PENDING)
-  /// Proposed changes for REVISION; {} for INITIAL (snapshot taken at review time).
-  payload       Json                    @default("{}")
-  changedFields String[]                @default([])
-  reviewNote    String?
-  reviewedById  String?
-  reviewedAt    DateTime?
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
-
-  listing    Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  reviewedBy User?   @relation("ListingModerationReviews", fields: [reviewedById], references: [id])
-
-  @@index([status, createdAt])
-  @@index([listingId, status])
-  @@map("listing_moderation_queue")
-}
-
-model Order {
-  id          String      @id @default(cuid())
-  listingId   String
-  /// Set when buying a DYNAMIC listing offer.
-  offerId     String?
-  buyerId     String
-  sellerId    String
-  amountCents Int
-  feeCents    Int
-  status      OrderStatus @default(PENDING_PAYMENT)
-  paidAt      DateTime?
-  deliveredAt DateTime?
-  completedAt DateTime?
-  expiresAt   DateTime?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-
-  listing       Listing         @relation(fields: [listingId], references: [id])
-  offer         ListingOffer?   @relation(fields: [offerId], references: [id], onDelete: SetNull)
-  buyer         User            @relation("BuyerOrders", fields: [buyerId], references: [id])
-  seller        User            @relation("SellerOrders", fields: [sellerId], references: [id])
-  payment       Payment?
-  escrowHold    EscrowHold?
-  conversation  Conversation?
-  dispute       Dispute?
-  ledgerEntries WalletLedger[]
-  review        Review?
-
-  @@index([buyerId])
-  @@index([sellerId])
-  @@index([status])
-  @@index([offerId])
-  @@map("orders")
-}
-
-model Payment {
-  id          String        @id @default(cuid())
-  orderId     String        @unique
-  provider    String
-  providerRef String
-  status      PaymentStatus @default(PENDING)
-  amountCents Int
-  rawWebhook  Json?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  order       Order         @relation(fields: [orderId], references: [id])
-
-  @@unique([provider, providerRef])
-  @@map("payments")
-}
-
-model EscrowHold {
-  id          String    @id @default(cuid())
-  orderId     String    @unique
-  amountCents Int
-  releaseAt   DateTime
-  releasedAt  DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  order       Order     @relation(fields: [orderId], references: [id])
-
-  @@index([releaseAt])
-  @@map("escrow_holds")
-}
-
-model Conversation {
-  id                 String    @id @default(cuid())
-  orderId            String    @unique
-  /// Denormalized for inbox sorting / preview (chat-ready).
-  lastMessageAt      DateTime?
-  lastMessagePreview String?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  order              Order     @relation(fields: [orderId], references: [id])
-  messages           Message[]
-
-  @@index([lastMessageAt])
-  @@map("conversations")
-}
-
-model Message {
-  id             String       @id @default(cuid())
-  conversationId String
-  senderId       String
-  body           String
-  /// Client-generated id for optimistic UI / dedupe (chat-ready).
-  clientId       String?
-  readAt         DateTime?
-  createdAt      DateTime     @default(now())
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender         User         @relation(fields: [senderId], references: [id])
-
-  @@index([conversationId, createdAt])
-  @@index([conversationId, clientId])
-  @@map("messages")
-}
-
-model Dispute {
-  id         String             @id @default(cuid())
-  orderId    String             @unique
-  openedById String
-  reason     String
-  status     DisputeStatus      @default(OPEN)
-  resolution DisputeResolution?
-  notes      String?
-  createdAt  DateTime           @default(now())
-  updatedAt  DateTime           @updatedAt
-  order      Order              @relation(fields: [orderId], references: [id])
-  openedBy   User               @relation("DisputeOpener", fields: [openedById], references: [id])
-
-  @@index([status])
-  @@map("disputes")
-}
-
-model WalletLedger {
-  id           String     @id @default(cuid())
-  userId       String
-  orderId      String?
-  type         LedgerType
-  amountCents  Int
-  balanceAfter Int
-  description  String?
-  createdAt    DateTime   @default(now())
-  user         User       @relation(fields: [userId], references: [id])
-  order        Order?     @relation(fields: [orderId], references: [id])
-
-  @@index([userId, createdAt])
-  @@map("wallet_ledger")
-}
-
-model Payout {
-  id          String       @id @default(cuid())
-  userId      String
-  amountCents Int
-  pixKey      String
-  status      PayoutStatus @default(REQUESTED)
-  providerRef String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  user        User         @relation(fields: [userId], references: [id])
-
-  @@index([userId, status])
-  @@map("payouts")
-}
-
-model AuditLog {
-  id         String   @id @default(cuid())
-  actorId    String?
-  action     String
-  entityType String
-  entityId   String?
-  meta       Json?
-  createdAt  DateTime @default(now())
-  actor      User?    @relation(fields: [actorId], references: [id])
-
-  @@index([entityType, entityId])
-  @@index([createdAt])
-  @@map("audit_logs")
-}
-
-/// Buyer review after a completed order (feeds seller reputation).
-model Review {
-  id        String   @id @default(cuid())
-  orderId   String   @unique
-  listingId String
-  sellerId  String
-  buyerId   String
-  /// 1–5 stars
-  rating    Int
-  comment   String?
-  createdAt DateTime @default(now())
-
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  seller  User    @relation("SellerReviews", fields: [sellerId], references: [id])
-  buyer   User    @relation("BuyerReviews", fields: [buyerId], references: [id])
-
-  @@index([sellerId, createdAt])
-  @@index([listingId, createdAt])
-  @@map("reviews")
-}
-
-/// Public Q&A on a listing (TrustMarket / GGMAX style).
-model ListingQuestion {
-  id           String    @id @default(cuid())
-  listingId    String
-  askerId      String
-  body         String
-  answer       String?
-  answeredAt   DateTime?
-  answeredById String?
-  /// Hidden / replaced by moderation.
-  moderated    Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-
-  listing    Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  asker      User    @relation("QuestionAsker", fields: [askerId], references: [id])
-  answeredBy User?   @relation("QuestionAnswerer", fields: [answeredById], references: [id])
-
-  @@index([listingId, createdAt])
-  @@index([askerId])
-  @@map("listing_questions")
-}
-
-/// In-app notifications (socket push + REST inbox).
-model Notification {
-  id        String    @id @default(cuid())
-  userId    String
-  /// MESSAGE | ORDER | DISPUTE | SYSTEM
-  type      String
-  title     String
-  body      String
-  href      String?
-  readAt    DateTime?
-  meta      Json?
-  createdAt DateTime  @default(now())
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, createdAt])
-  @@index([userId, readAt])
-  @@map("notifications")
-}
-
-/// Per-category in-app / browser-push toggles.
-model NotificationPreference {
-  id        String   @id @default(cuid())
-  userId    String
-  /// MESSAGE | ORDER | DISPUTE | QUESTION | REVIEW | SYSTEM
-  category  String
-  inApp     Boolean  @default(true)
-  push      Boolean  @default(true)
-  updatedAt DateTime @updatedAt
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, category])
-  @@index([userId])
-  @@map("notification_preferences")
-}
-
-model PushSubscription {
-  id        String   @id @default(cuid())
-  userId    String
-  endpoint  String   @unique
-  p256dh    String
-  auth      String
-  userAgent String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("push_subscriptions")
-}
-
-model Favorite {
-  id        String   @id @default(cuid())
-  userId    String
-  listingId String
-  createdAt DateTime @default(now())
-
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, listingId])
-  @@index([userId, createdAt])
-  @@map("favorites")
 }

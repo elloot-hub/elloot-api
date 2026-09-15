@@ -1,5 +1,6 @@
 import { env } from "../../config/env";
 import { AppError } from "../../lib/errors";
+import { createWithPublicCode } from "../../lib/create-with-code";
 import {
   lockListingForUpdate,
   lockOfferForUpdate,
@@ -14,6 +15,10 @@ import {
 } from "./orders.reserve";
 import { routes } from "../conversations/hrefs";
 import { notifyUser } from "../conversations/notifications.notify";
+import {
+  reconcileAutoStockQuantity,
+  reserveAutoStockForOrder,
+} from "../listings/delivery-stock.service";
 
 export { calcFeeCents };
 
@@ -46,6 +51,7 @@ export async function createOrderFromListing(input: {
 
     let amountCents = listing.priceCents;
     let offerId: string | null = null;
+    let deliveryMode = listing.deliveryMode as "MANUAL" | "AUTO";
 
     if (listing.listingModel === "DYNAMIC") {
       if (!input.offerId) {
@@ -59,9 +65,24 @@ export async function createOrderFromListing(input: {
       if (!offer || offer.listingId !== listing.id) {
         throw new AppError(404, "Offer not found", "OFFER_NOT_FOUND");
       }
-      if (offer.stockQuantity < 1) {
+      deliveryMode = offer.deliveryMode as "MANUAL" | "AUTO";
+
+      if (deliveryMode === "AUTO") {
+        const available = await reconcileAutoStockQuantity(tx, {
+          listingId: listing.id,
+          offerId: offer.id,
+        });
+        if (available < 1) {
+          throw new AppError(
+            409,
+            "Este anúncio não tem chaves de entrega automática disponíveis. O vendedor precisa recarregar o estoque automático.",
+            "AUTO_STOCK_UNAVAILABLE",
+          );
+        }
+      } else if (offer.stockQuantity < 1) {
         throw new AppError(409, "Offer out of stock", "OUT_OF_STOCK");
       }
+
       await tx.listingOffer.update({
         where: { id: offer.id },
         data: { stockQuantity: { decrement: 1 } },
@@ -76,9 +97,22 @@ export async function createOrderFromListing(input: {
           "OFFER_NOT_ALLOWED",
         );
       }
-      if (listing.stockQuantity < 1) {
+
+      if (deliveryMode === "AUTO") {
+        const available = await reconcileAutoStockQuantity(tx, {
+          listingId: listing.id,
+        });
+        if (available < 1) {
+          throw new AppError(
+            409,
+            "Este anúncio não tem chaves de entrega automática disponíveis. O vendedor precisa recarregar o estoque automático.",
+            "AUTO_STOCK_UNAVAILABLE",
+          );
+        }
+      } else if (listing.stockQuantity < 1) {
         throw new AppError(409, "Listing out of stock", "OUT_OF_STOCK");
       }
+
       await tx.listing.update({
         where: { id: listing.id },
         data: { stockQuantity: { decrement: 1 } },
@@ -89,18 +123,31 @@ export async function createOrderFromListing(input: {
     const feeCents = calcFeeCents(amountCents);
     const expiresAt = new Date(Date.now() + env.CHECKOUT_RESERVE_SECONDS * 1000);
 
-    const order = await tx.order.create({
-      data: {
-        listingId: listing.id,
-        offerId,
-        buyerId: input.buyerId,
-        sellerId: listing.sellerId,
-        amountCents,
-        feeCents,
-        status: "PENDING_PAYMENT",
-        expiresAt,
-      },
+    const order = await createWithPublicCode({
+      kind: "ORD",
+      create: (code) =>
+        tx.order.create({
+          data: {
+            code,
+            listingId: listing.id,
+            offerId,
+            buyerId: input.buyerId,
+            sellerId: listing.sellerId,
+            amountCents,
+            feeCents,
+            status: "PENDING_PAYMENT",
+            expiresAt,
+          },
+        }),
     });
+
+    if (deliveryMode === "AUTO") {
+      await reserveAutoStockForOrder(
+        tx,
+        { id: order.id, listingId: listing.id, offerId },
+        deliveryMode,
+      );
+    }
 
     // Soft signal for last-unit / ops tooling; stock is the source of truth.
     await tryReserveListing(listing.id, order.id);
@@ -129,7 +176,7 @@ export async function markOrderDelivered(
     }
 
     return tx.order.update({
-      where: { id: orderId },
+      where: { id: locked.id },
       data: { status: "DELIVERED", deliveredAt: new Date() },
     });
   }, actor);
@@ -139,8 +186,8 @@ export async function markOrderDelivered(
     type: "ORDER",
     title: "Pedido entregue",
     body: "O vendedor marcou seu pedido como entregue. Confirme o recebimento.",
-    href: routes.order(order.id),
-    meta: { orderId: order.id },
+    href: routes.order(order.code),
+    meta: { orderId: order.id, orderCode: order.code },
   });
 
   return order;
@@ -161,8 +208,12 @@ export async function confirmOrderByBuyer(
     if (locked.buyerId !== buyerId) {
       throw new AppError(403, "Forbidden", "FORBIDDEN");
     }
-    if (locked.status !== "PAID" && locked.status !== "DELIVERED") {
-      throw new AppError(409, "Order cannot be confirmed", "INVALID_STATUS");
+    if (locked.status !== "DELIVERED") {
+      throw new AppError(
+        409,
+        "Confirme apenas após o vendedor marcar como entregue",
+        "INVALID_STATUS",
+      );
     }
 
     await completeOrderTx(tx, locked.id);
@@ -175,7 +226,7 @@ export async function confirmOrderByBuyer(
     title: "Pedido confirmado",
     body: "O comprador confirmou o recebimento. O valor será liberado na sua carteira.",
     href: routes.dashboardSales,
-    meta: { orderId: order.id },
+    meta: { orderId: order.id, orderCode: order.code },
   });
 
   return order;

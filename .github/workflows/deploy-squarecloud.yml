@@ -1,0 +1,52 @@
+name: Deploy Square Cloud
+
+# Build no GitHub Actions e envia o artefato pronto (sem build na Square).
+# Docs:
+# - https://help.squarecloud.app/pt-br/article/workflow-github-actions-deploy-automatico-o6c7e2/
+# - https://docs.squarecloud.app/pt-br/tutorials/website/nextjs (padrão commit --file)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check secrets
+        run: npm run check:secrets
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Pack release zip
+        run: |
+          zip -r project.zip \
+            package.json \
+            package-lock.json \
+            squarecloud.app \
+            dist \
+            prisma \
+            -x "prisma/*.db" "prisma/*.db-journal"
+
+      - name: Deploy on Square Cloud
+        uses: squarecloudofc/github-action@v2
+        with:
+          command: commit --file project.zip ${{ secrets.SQUARECLOUD_APP_ID }} --restart
+          token: ${{ secrets.SQUARE_CLOUD_TOKEN }}

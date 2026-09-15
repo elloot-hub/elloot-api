@@ -5,6 +5,10 @@ import { env } from "../../config/env";
 import { asyncHandler } from "../../lib/async-handler";
 import { AppError } from "../../lib/errors";
 import { requireAuth, requireRole } from "../../middleware/auth";
+import {
+  paymentSyncLimiter,
+  sandboxConfirmLimiter,
+} from "../../middleware/rate-limit";
 import type { RlsActor } from "../../databases";
 import { confirmSandboxPayment } from "./sandbox.service";
 import { syncEfiPayment } from "./efi/efi.service";
@@ -40,6 +44,7 @@ paymentsRouter.get(
 paymentsRouter.post(
   "/efi/sync",
   requireAuth,
+  paymentSyncLimiter,
   asyncHandler(async (req, res) => {
     if (env.PAYMENT_PROVIDER !== "efi") {
       throw new AppError(
@@ -58,6 +63,7 @@ paymentsRouter.post(
 paymentsRouter.post(
   "/sandbox/confirm",
   requireAuth,
+  sandboxConfirmLimiter,
   asyncHandler(async (req, res) => {
     if (!env.allowSandboxPayments) {
       throw new AppError(
@@ -114,7 +120,15 @@ paymentsRouter.post(
   "/sandbox/confirm-admin",
   requireAuth,
   requireRole("ADMIN"),
+  sandboxConfirmLimiter,
   asyncHandler(async (req, res) => {
+    if (!env.allowSandboxPayments) {
+      throw new AppError(
+        403,
+        "Sandbox payments are disabled in this environment",
+        "SANDBOX_DISABLED",
+      );
+    }
     const body = confirmSchema.parse(req.body);
     const result = await confirmSandboxPayment(body.providerRef, actorOf(req));
     res.json({ ok: true, ...result });

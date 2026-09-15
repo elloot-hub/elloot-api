@@ -9,7 +9,10 @@ import {
 } from "../../databases";
 import { AppError } from "../../lib/errors";
 import { sanitizeUserText } from "../../lib/sanitize";
+import { allocateUsername } from "../../lib/username";
 import { signAccessToken } from "../../middleware/auth";
+import { revokeAllUserSessions } from "./auth-sessions";
+import { signChallenge, userHas2fa } from "./two-factor.shared";
 
 export type OAuthProvider = "google" | "discord";
 
@@ -21,8 +24,79 @@ type OAuthProfile = {
   avatarUrl?: string;
 };
 
+export type OAuthExchangePayload =
+  | { kind: "session"; accessToken: string }
+  | {
+      kind: "2fa";
+      challengeToken: string;
+      emailHint: string;
+    };
+
+export type OAuthCallbackResult =
+  | {
+      requires2fa: false;
+      accessToken: string;
+      user: {
+        id: string;
+        email: string;
+        name: string | null;
+        avatarUrl: string | null;
+        role: "BUYER" | "SELLER" | "ADMIN";
+        kycStatus: "NONE" | "PENDING" | "APPROVED" | "REJECTED";
+        createdAt: Date;
+      };
+    }
+  | {
+      requires2fa: true;
+      challengeToken: string;
+      emailHint: string;
+      user: {
+        id: string;
+        email: string;
+        name: string | null;
+        avatarUrl: string | null;
+        role: "BUYER" | "SELLER" | "ADMIN";
+        kycStatus: "NONE" | "PENDING" | "APPROVED" | "REJECTED";
+        createdAt: Date;
+      };
+    };
+
 const memoryStates = new Map<string, number>();
-const memoryExchange = new Map<string, { token: string; expiresAt: number }>();
+const memoryExchange = new Map<string, { payload: string; expiresAt: number }>();
+
+function emailHint(email: string) {
+  return email.replace(
+    /^(.)(.*)(@.*)$/,
+    (_, a, mid, domain) =>
+      `${a}${"•".repeat(Math.min(mid.length, 6))}${domain}`,
+  );
+}
+
+function parseExchangePayload(raw: string): OAuthExchangePayload | null {
+  try {
+    const parsed = JSON.parse(raw) as OAuthExchangePayload;
+    if (parsed?.kind === "session" && typeof parsed.accessToken === "string") {
+      return parsed;
+    }
+    if (
+      parsed?.kind === "2fa" &&
+      typeof parsed.challengeToken === "string" &&
+      typeof parsed.emailHint === "string"
+    ) {
+      return parsed;
+    }
+    // Legacy: bare JWT string
+    if (raw.startsWith("eyJ")) {
+      return { kind: "session", accessToken: raw };
+    }
+    return null;
+  } catch {
+    if (raw.startsWith("eyJ")) {
+      return { kind: "session", accessToken: raw };
+    }
+    return null;
+  }
+}
 
 async function saveState(state: string) {
   const key = oauthStateKey(state);
@@ -57,46 +131,58 @@ async function consumeState(state: string) {
 }
 
 /** One-time code for frontend exchange (never put JWT in the URL).
- *  Consume is idempotent within TTL so React Strict Mode / remounts
- *  can safely call exchange twice with the same code.
+ *  Consumed with GETDEL. App callback uses sessionStorage lock to avoid
+ *  double-exchange; a second call fails (code already used).
  */
-export async function createOAuthExchangeCode(accessToken: string) {
+export async function createOAuthExchangeCode(
+  payload: OAuthExchangePayload,
+) {
   const code = randomBytes(32).toString("hex");
   const key = oauthExchangeKey(code);
+  const value = JSON.stringify(payload);
   if (redis) {
     try {
       await connectRedis();
-      await redis.set(key, accessToken, "EX", 120);
+      await redis.set(key, value, "EX", 120);
       return code;
     } catch {
       // fall through
     }
   }
   memoryExchange.set(code, {
-    token: accessToken,
+    payload: value,
     expiresAt: Date.now() + 120_000,
   });
   return code;
 }
 
-export async function consumeOAuthExchangeCode(code: string) {
+export async function consumeOAuthExchangeCode(
+  code: string,
+): Promise<OAuthExchangePayload | null> {
   const key = oauthExchangeKey(code);
   if (redis) {
     try {
       await connectRedis();
-      // Keep the value for the TTL window (idempotent GET, no DEL).
-      const token = await redis.get(key);
-      return token;
+      const raw =
+        typeof redis.getdel === "function"
+          ? await redis.getdel(key)
+          : await (async () => {
+              const v = await redis.get(key);
+              if (v) await redis.del(key);
+              return v;
+            })();
+      if (!raw) return null;
+      return parseExchangePayload(raw);
     } catch {
       // fall through
     }
   }
   const row = memoryExchange.get(code);
+  memoryExchange.delete(code);
   if (!row || row.expiresAt < Date.now()) {
-    memoryExchange.delete(code);
     return null;
   }
-  return row.token;
+  return parseExchangePayload(row.payload);
 }
 
 function requireGoogleConfig() {
@@ -281,12 +367,11 @@ export async function upsertOAuthUser(profile: OAuthProfile) {
     });
 
     if (existingAccount) {
+      // Keep profile edits from settings — OAuth must not overwrite name/avatar
+      // on every login.
       return tx.user.update({
         where: { id: existingAccount.userId },
-        data: {
-          name: safeName ?? existingAccount.user.name,
-          avatarUrl: profile.avatarUrl ?? existingAccount.user.avatarUrl,
-        },
+        data: { lastSeenAt: new Date() },
       });
     }
 
@@ -309,22 +394,33 @@ export async function upsertOAuthUser(profile: OAuthProfile) {
       const reclaimUnverified =
         !byEmail.emailVerifiedAt && Boolean(byEmail.passwordHash);
 
-      return tx.user.update({
+      const updated = await tx.user.update({
         where: { id: byEmail.id },
         data: {
-          name: safeName ?? byEmail.name,
-          avatarUrl: profile.avatarUrl ?? byEmail.avatarUrl,
+          // Only fill blanks on first link — never clobber existing profile.
+          name: byEmail.name ?? safeName ?? null,
+          avatarUrl: byEmail.avatarUrl ?? profile.avatarUrl ?? null,
           emailVerifiedAt: new Date(),
           lastSeenAt: new Date(),
           ...(reclaimUnverified ? { passwordHash: null } : {}),
         },
       });
+
+      if (reclaimUnverified) {
+        await revokeAllUserSessions(tx, byEmail.id);
+      }
+
+      return updated;
     }
 
     return tx.user.create({
       data: {
         email: profile.email,
         name: safeName,
+        username: await allocateUsername(tx, {
+          email: profile.email,
+          name: safeName,
+        }),
         avatarUrl: profile.avatarUrl,
         role: "BUYER",
         emailVerifiedAt: new Date(),
@@ -344,7 +440,7 @@ export async function handleOAuthCallback(
   provider: OAuthProvider,
   code: string | undefined,
   state: string | undefined,
-) {
+): Promise<OAuthCallbackResult> {
   if (!code || !state) {
     throw new AppError(400, "Missing OAuth code or state", "OAUTH_INVALID_REQUEST");
   }
@@ -360,6 +456,25 @@ export async function handleOAuthCallback(
       : await exchangeDiscordCode(code);
 
   const user = await upsertOAuthUser(profile);
+  const publicUser = {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    avatarUrl: user.avatarUrl,
+    role: user.role,
+    kycStatus: user.kycStatus,
+    createdAt: user.createdAt,
+  };
+
+  if (userHas2fa(user)) {
+    return {
+      requires2fa: true,
+      challengeToken: signChallenge({ id: user.id, email: user.email }),
+      emailHint: emailHint(user.email),
+      user: publicUser,
+    };
+  }
+
   const accessToken = signAccessToken({
     id: user.id,
     email: user.email,
@@ -370,22 +485,23 @@ export async function handleOAuthCallback(
   });
 
   return {
+    requires2fa: false,
     accessToken,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      avatarUrl: user.avatarUrl,
-      role: user.role,
-      kycStatus: user.kycStatus,
-      createdAt: user.createdAt,
-    },
+    user: publicUser,
   };
 }
 
 /** Redirect with one-time code only — never put the JWT in the query string. */
-export async function buildFrontendRedirect(accessToken: string) {
-  const code = await createOAuthExchangeCode(accessToken);
+export async function buildFrontendRedirect(result: OAuthCallbackResult) {
+  const payload: OAuthExchangePayload = result.requires2fa
+    ? {
+        kind: "2fa",
+        challengeToken: result.challengeToken,
+        emailHint: result.emailHint,
+      }
+    : { kind: "session", accessToken: result.accessToken };
+
+  const code = await createOAuthExchangeCode(payload);
   const url = new URL("/auth/callback", env.FRONTEND_URL);
   url.searchParams.set("code", code);
   return url.toString();

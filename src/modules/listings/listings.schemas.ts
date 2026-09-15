@@ -2,11 +2,17 @@ import { z } from "zod";
 
 const MIN_PRICE_CENTS = 150;
 
+const autoStockLinesSchema = z
+  .array(z.string().trim().min(1).max(2000))
+  .max(10_000)
+  .optional();
+
 const listingOfferSchema = z.object({
   title: z.string().trim().min(2).max(120),
   priceCents: z.number().int().min(MIN_PRICE_CENTS).max(50_000_000),
   stockQuantity: z.number().int().positive().max(1_000_000).optional().default(1),
   deliveryMode: z.enum(["MANUAL", "AUTO"]).optional().default("MANUAL"),
+  autoStockLines: autoStockLinesSchema,
 });
 
 export const createListingSchema = z
@@ -22,6 +28,7 @@ export const createListingSchema = z
       .nullable(),
     listingModel: z.enum(["NORMAL", "DYNAMIC", "SERVICE"]).optional().default("NORMAL"),
     deliveryMode: z.enum(["MANUAL", "AUTO"]).optional().default("MANUAL"),
+    autoStockLines: autoStockLinesSchema,
     /** Preferred: MediaAsset ids owned by the seller (purpose LISTING). */
     mediaAssetIds: z.array(z.string().min(1)).max(8).optional().default([]),
     /**
@@ -78,6 +85,7 @@ export const updateListingSchema = z
       .optional()
       .nullable(),
     deliveryMode: z.enum(["MANUAL", "AUTO"]).optional(),
+    autoStockLines: autoStockLinesSchema,
     mediaAssetIds: z.array(z.string().min(1)).max(8).optional(),
     mediaUrls: z.array(z.url()).max(8).optional(),
     offers: z.array(updateListingOfferSchema).min(2).max(30).optional(),
@@ -98,3 +106,30 @@ export const updateListingSchema = z
 export const reorderOffersSchema = z.object({
   offerIds: z.array(z.string().min(1)).min(1).max(30),
 });
+
+export const updateListingStockSchema = z
+  .object({
+    offerId: z.string().min(1).optional(),
+    /** Manual delivery: set absolute stock quantity. */
+    stockQuantity: z.number().int().min(0).max(1_000_000).optional(),
+    /** Auto delivery: append new key lines. */
+    appendLines: z
+      .array(z.string().trim().min(1).max(2000))
+      .max(10_000)
+      .optional(),
+    /** Auto delivery: remove AVAILABLE item ids. */
+    removeItemIds: z.array(z.string().min(1)).max(10_000).optional(),
+    /** Auto delivery: replace all AVAILABLE lines. */
+    replaceLines: z
+      .array(z.string().trim().min(1).max(2000))
+      .max(10_000)
+      .optional(),
+  })
+  .refine(
+    (data) =>
+      data.stockQuantity !== undefined ||
+      data.appendLines !== undefined ||
+      data.removeItemIds !== undefined ||
+      data.replaceLines !== undefined,
+    { message: "Provide at least one stock change" },
+  );

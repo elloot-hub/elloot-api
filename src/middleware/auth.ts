@@ -78,6 +78,7 @@ export function signAccessToken(user: AuthUser) {
     jwtid: newTokenId(),
     expiresIn: env.JWT_EXPIRES_IN as jwt.SignOptions["expiresIn"],
     algorithm: "HS256",
+    audience: "elloot-app",
   });
 }
 
@@ -88,7 +89,13 @@ export function verifyAccessToken(token: string): AuthUser & {
   try {
     const payload = jwt.verify(token, env.JWT_SECRET, {
       algorithms: ["HS256"],
-    }) as JwtPayload;
+    }) as JwtPayload & { aud?: string | string[] };
+    if (payload.aud) {
+      const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+      if (!aud.includes("elloot-app")) {
+        throw new Error("wrong audience");
+      }
+    }
     if (!payload.sub || !payload.email || !payload.role) {
       throw new Error("invalid payload");
     }

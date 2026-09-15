@@ -191,6 +191,13 @@ BEGIN
       USING ERRCODE = '42501';
   END IF;
 
+  IF (NEW."totpSecret" IS DISTINCT FROM OLD."totpSecret"
+      OR NEW."totpEnabledAt" IS DISTINCT FROM OLD."totpEnabledAt")
+     AND NOT app_is_admin() THEN
+    RAISE EXCEPTION 'totp fields are not user-editable'
+      USING ERRCODE = '42501';
+  END IF;
+
   RETURN NEW;
 END;
 $$;

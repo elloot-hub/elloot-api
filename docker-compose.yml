@@ -21,6 +21,6 @@ services:
     volumes:
       - elloot_redis_data:/data
 
-volumes:
+volumes:image.png
   elloot_pg_data:
   elloot_redis_data:

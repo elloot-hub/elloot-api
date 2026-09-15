@@ -21,6 +21,27 @@ const envSchema = z.object({
   REDIS_SSL_CERT: z.string().optional(),
   JWT_SECRET: z.string().min(32),
   JWT_EXPIRES_IN: z.string().default("12h"),
+  ADMIN_JWT_SECRET: z.string().min(32),
+  ADMIN_JWT_EXPIRES_IN: z.string().default("2h"),
+  ADMIN_CORS_ORIGIN: z.string().default("http://localhost:3001"),
+  ADMIN_FRONTEND_URL: z.string().default("http://localhost:3001"),
+  /** Comma-separated IPs. Empty = allow all (dev only). Required in production. */
+  ADMIN_IP_ALLOWLIST: z
+    .string()
+    .optional()
+    .transform((v) =>
+      v
+        ? v
+            .split(",")
+            .map((ip) => ip.trim())
+            .filter(Boolean)
+        : [],
+    ),
+  /**
+   * Express trust proxy hops. Default 1 (e.g. Square Cloud / one reverse proxy).
+   * Set 0 only when the API is exposed without a proxy (local direct).
+   */
+  TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(1),
   PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(1000),
   ESCROW_AUTO_RELEASE_HOURS: z.coerce.number().int().positive().default(48),
   PAYMENT_PROVIDER: z.enum(["sandbox", "efi"]).default("sandbox"),
@@ -79,6 +100,23 @@ const envSchema = z.object({
   VAPID_PRIVATE_KEY: z.string().optional(),
   /** mailto: or https: contact for push service */
   VAPID_SUBJECT: z.string().optional(),
+
+  /** SMTP — password reset / transactional email. Empty = disabled (dev logs link). */
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_SECURE: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true")),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  /** From header, e.g. "Elloot <noreply@elloot.com.br>" */
+  SMTP_FROM: z.string().optional(),
+  /** Log reset URLs even when SMTP works (dev only recommended). */
+  PASSWORD_RESET_LOG_LINKS: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -110,6 +148,46 @@ if (
 }
 
 if (
+  WEAK_JWT_SECRETS.has(data.ADMIN_JWT_SECRET) ||
+  data.ADMIN_JWT_SECRET.length < 32 ||
+  data.ADMIN_JWT_SECRET.startsWith("replace-with") ||
+  data.ADMIN_JWT_SECRET.startsWith("change-me") ||
+  data.ADMIN_JWT_SECRET === data.JWT_SECRET
+) {
+  console.error(
+    "ADMIN_JWT_SECRET must be a distinct secret (>=32 chars), not equal to JWT_SECRET.",
+  );
+  process.exit(1);
+}
+
+if (data.NODE_ENV === "production" && data.ADMIN_IP_ALLOWLIST.length === 0) {
+  console.error(
+    "ADMIN_IP_ALLOWLIST is required in production (comma-separated IPs of offices/VPN). Refusing to start with an open admin panel.",
+  );
+  process.exit(1);
+}
+
+if (
+  data.NODE_ENV === "production" &&
+  data.PAYMENT_PROVIDER === "sandbox"
+) {
+  console.error(
+    "PAYMENT_PROVIDER=sandbox is not allowed in production. Set PAYMENT_PROVIDER=efi.",
+  );
+  process.exit(1);
+}
+
+if (
+  data.NODE_ENV === "production" &&
+  data.PAYMENT_PROVIDER === "efi" &&
+  data.EFI_SANDBOX
+) {
+  console.warn(
+    "[go-live] EFI_SANDBOX=true while NODE_ENV=production — PIX will hit Efí sandbox, not live money.",
+  );
+}
+
+if (
   data.MEDIA_SIGNING_SECRET &&
   (WEAK_JWT_SECRETS.has(data.MEDIA_SIGNING_SECRET) ||
     data.MEDIA_SIGNING_SECRET.length < 32)
@@ -122,6 +200,13 @@ if (
 
 const allowSandboxPayments =
   data.ALLOW_SANDBOX_PAYMENTS ?? data.NODE_ENV !== "production";
+
+if (data.NODE_ENV === "production" && allowSandboxPayments) {
+  console.error(
+    "ALLOW_SANDBOX_PAYMENTS cannot be true in production. Omit it or set false.",
+  );
+  process.exit(1);
+}
 
 const postgresCertPath = resolveSslCertPath({
   pathEnv: data.DATABASE_SSL_CERT_PATH,
@@ -190,4 +275,13 @@ export const env = {
       data.VAPID_PRIVATE_KEY?.trim() &&
       data.VAPID_SUBJECT?.trim(),
   ),
+  smtpEnabled: Boolean(
+    data.SMTP_HOST?.trim() &&
+      data.SMTP_USER?.trim() &&
+      data.SMTP_PASS?.trim() &&
+      data.SMTP_FROM?.trim(),
+  ),
+  smtpSecure:
+    data.SMTP_SECURE ??
+    (data.SMTP_PORT === 465),
 };

@@ -14,6 +14,7 @@ export type RealtimeMessagePayload = {
     clientId: string | null;
     readAt: string | null;
     createdAt: string;
+    internal?: boolean;
     sender?: { id: string; name: string | null };
   };
 };
@@ -27,6 +28,15 @@ export type RealtimeNotificationPayload = {
   readAt: string | null;
   createdAt: string;
   meta?: unknown;
+};
+
+export type RealtimeConversationReadPayload = {
+  conversationId: string;
+  readerId: string;
+  role: "BUYER" | "SELLER" | "ADMIN";
+  buyerLastReadAt: string | null;
+  sellerLastReadAt: string | null;
+  adminLastReadAt: string | null;
 };
 
 export type ClientToServerEvents = {
@@ -50,6 +60,7 @@ export type ClientToServerEvents = {
 export type ServerToClientEvents = {
   "presence:update": (payload: PresenceUpdatePayload) => void;
   "message:new": (payload: RealtimeMessagePayload) => void;
+  "conversation:read": (payload: RealtimeConversationReadPayload) => void;
   "notification:new": (payload: RealtimeNotificationPayload) => void;
 };
 
@@ -61,4 +72,5 @@ export type SocketData = {
     email: string;
     role: "BUYER" | "SELLER" | "ADMIN";
   };
+  fromAdminPanel?: boolean;
 };

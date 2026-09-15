@@ -4,6 +4,7 @@ import { isUserOnline } from "../../realtime/presence";
 export const listingSellerSelect = {
   id: true,
   name: true,
+  username: true,
   avatarUrl: true,
   createdAt: true,
   lastSeenAt: true,
@@ -15,6 +16,7 @@ export const listingSellerSelect = {
 
 export const listingPublicSelect = {
   id: true,
+  code: true,
   title: true,
   description: true,
   priceCents: true,
@@ -136,6 +138,7 @@ export function serializeListingPublic(
     seller: {
       id: listing.seller.id,
       name: listing.seller.name,
+      username: listing.seller.username,
       avatarUrl: listing.seller.avatarUrl,
       createdAt: listing.seller.createdAt,
       lastSeenAt: listing.seller.lastSeenAt,

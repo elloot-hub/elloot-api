@@ -10,6 +10,7 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # logs / OS
 *.log
@@ -24,16 +25,22 @@ prisma/*.db-journal
 storage/
 !storage/.gitkeep
 
-# Square Cloud TLS certificates (never commit)
-src/databases/**/certificates/*.pem
-src/databases/**/certificates/*.key
-src/databases/**/certificates/*.crt
-src/databases/**/certificates/*.p12
-src/databases/efi/*.p12
+# TLS / payment certs (never commit)
+*.pem
+*.p12
+*.key
+*.crt
+src/databases/**/certificates/*
 !src/databases/**/certificates/.gitkeep
+src/databases/efi/*
+!src/databases/efi/.gitkeep
 
 # Legacy path
 certs/
+
+# Square Cloud local artifacts
+*.zip
+.squarecloud/
 
 # IDE
 .idea/

@@ -25,6 +25,8 @@ import {
   aggregateFunnelFromEvents,
   loadSellerListingEvents,
 } from "../listings/listings.events";
+import { isOrderCode } from "../../lib/public-codes";
+import { orderWhereByRef } from "./order-ref";
 
 export const ordersRouter = Router();
 
@@ -35,20 +37,24 @@ const createOrderSchema = z.object({
 
 const orderSelect = {
   id: true,
+  code: true,
   status: true,
   amountCents: true,
   feeCents: true,
   offerId: true,
   paidAt: true,
   deliveredAt: true,
+  deliveryContent: true,
   completedAt: true,
   expiresAt: true,
   createdAt: true,
   listing: {
     select: {
       id: true,
+      code: true,
       title: true,
       priceCents: true,
+      deliveryMode: true,
       media: {
         take: 1,
         orderBy: { sortOrder: "asc" as const },
@@ -61,6 +67,7 @@ const orderSelect = {
       id: true,
       title: true,
       priceCents: true,
+      deliveryMode: true,
     },
   },
   buyer: { select: { id: true, name: true, email: true } },
@@ -93,6 +100,7 @@ const orderSelect = {
   dispute: {
     select: {
       id: true,
+      code: true,
       openedById: true,
       reason: true,
       status: true,
@@ -172,11 +180,23 @@ ordersRouter.get(
               : { OR: [{ buyerId: actor.id }, { sellerId: actor.id }] }),
           ...(query.status ? { status: query.status } : {}),
           ...(query.q
-            ? {
-                listing: {
-                  title: { contains: query.q, mode: "insensitive" },
-                },
-              }
+            ? isOrderCode(query.q)
+              ? { code: query.q.toUpperCase() }
+              : {
+                  OR: [
+                    {
+                      code: {
+                        contains: query.q,
+                        mode: "insensitive" as const,
+                      },
+                    },
+                    {
+                      listing: {
+                        title: { contains: query.q, mode: "insensitive" as const },
+                      },
+                    },
+                  ],
+                }
             : {}),
           ...(dateWindow
             ? { createdAt: { gte: dateWindow.start, lte: dateWindow.end } }
@@ -263,10 +283,10 @@ ordersRouter.get(
   "/:id",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const id = routeParam(req.params.id);
+    const ref = routeParam(req.params.id);
     const actor = actorOf(req);
     const order = await withRlsTransaction({ actor }, (tx) =>
-      tx.order.findUnique({ where: { id }, select: orderSelect }),
+      tx.order.findUnique({ where: orderWhereByRef(ref), select: orderSelect }),
     );
     if (!order) throw new AppError(404, "Order not found", "ORDER_NOT_FOUND");
     res.json({ order });

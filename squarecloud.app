@@ -1,0 +1,9 @@
+DISPLAY_NAME=Elloot API
+DESCRIPTION=API www.api.elloot.com.br
+MAIN=dist/index.js
+MEMORY=1024
+VERSION=recommended
+RUNTIME=nodejs
+AUTORESTART=true
+SUBDOMAIN=elloot-api
+START=npx prisma generate && npm start

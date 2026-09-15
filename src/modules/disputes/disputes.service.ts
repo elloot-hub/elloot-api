@@ -12,6 +12,8 @@ import {
 } from "../orders/orders.lifecycle";
 import { routes } from "../conversations/hrefs";
 import { notifyUser } from "../conversations/notifications.notify";
+import { createWithPublicCode } from "../../lib/create-with-code";
+import { disputeWhereByRef } from "../../lib/entity-ref";
 
 export async function openDispute(input: {
   orderId: string;
@@ -50,13 +52,18 @@ export async function openDispute(input: {
       data: { status: "DISPUTED" },
     });
 
-    const dispute = await tx.dispute.create({
-      data: {
-        orderId: order.id,
-        openedById: input.actor.id,
-        reason,
-        status: "OPEN",
-      },
+    const dispute = await createWithPublicCode({
+      kind: "DSP",
+      create: (code) =>
+        tx.dispute.create({
+          data: {
+            code,
+            orderId: order.id,
+            openedById: input.actor.id,
+            reason,
+            status: "OPEN",
+          },
+        }),
     });
 
     await tx.auditLog.create({
@@ -69,11 +76,22 @@ export async function openDispute(input: {
       },
     });
 
+    await tx.conversation.updateMany({
+      where: { orderId: order.id },
+      data: {
+        moderationStatus: "REPORTED",
+        reportReason: reason,
+        resolvedAt: null,
+      },
+    });
+
     return {
       dispute,
       recipientId:
         order.buyerId === input.actor.id ? order.sellerId : order.buyerId,
       orderId: order.id,
+      orderCode: order.code,
+      disputeCode: dispute.code,
     };
   }, input.actor);
 
@@ -83,8 +101,13 @@ export async function openDispute(input: {
       type: "DISPUTE",
       title: "Disputa aberta",
       body: "Um pedido em que você participa entrou em disputa.",
-      href: routes.order(result.orderId),
-      meta: { disputeId: result.dispute.id, orderId: result.orderId },
+      href: routes.order(result.orderCode),
+      meta: {
+        disputeId: result.dispute.id,
+        disputeCode: result.disputeCode,
+        orderId: result.orderId,
+        orderCode: result.orderCode,
+      },
     });
   }
 
@@ -108,7 +131,7 @@ export async function resolveDispute(input: {
 
   const result = await withServiceTransaction(async (tx) => {
     const dispute = await tx.dispute.findUnique({
-      where: { id: input.disputeId },
+      where: disputeWhereByRef(input.disputeId),
     });
     if (!dispute) {
       throw new AppError(404, "Dispute not found", "DISPUTE_NOT_FOUND");
@@ -169,6 +192,8 @@ export async function resolveDispute(input: {
       buyerId: order.buyerId,
       sellerId: order.sellerId,
       orderId: order.id,
+      orderCode: order.code,
+      disputeCode: updated.code,
       resolution: input.resolution,
     };
   }, input.actor);
@@ -186,10 +211,12 @@ export async function resolveDispute(input: {
       type: "DISPUTE",
       title: "Disputa resolvida",
       body: resolutionLabel,
-      href: routes.order(result.orderId),
+      href: routes.order(result.orderCode),
       meta: {
         disputeId: result.dispute.id,
+        disputeCode: result.disputeCode,
         orderId: result.orderId,
+        orderCode: result.orderCode,
         resolution: result.resolution,
       },
     });

@@ -1,8 +1,8 @@
 # Elloot API
 
-API do marketplace [Elloot](https://github.com/faite-push/elloot-api) — Express 5, Prisma 6, PostgreSQL, Redis opcional.
+API do marketplace [Elloot](https://github.com/elloot-hub/elloot-api) — Express 5, Prisma 6, PostgreSQL, Redis opcional.
 
-Frontend irmão: [`elloot-app`](https://github.com/faite-push/elloot-app).
+Frontend irmão: [`elloot-app`](https://github.com/elloot-hub/elloot-app).
 
 ## Requisitos
 
@@ -13,7 +13,7 @@ Frontend irmão: [`elloot-app`](https://github.com/faite-push/elloot-app).
 ## Setup
 
 ```bash
-git clone https://github.com/faite-push/elloot-api.git
+git clone https://github.com/elloot-hub/elloot-api.git
 cd elloot-api
 npm install
 cp .env.example .env.local
@@ -78,7 +78,48 @@ scripts/           # e2e-flow.ts
 | disputes | `/api/disputes` |
 | jobs | `/api/jobs` |
 
-Detalhes de env: [`.env.example`](./.env.example).
+Detalhes de env: [`.env.example`](./.env.example) (dev) e [`.env.production.example`](./.env.production.example) (prod).
+
+## Deploy (Square Cloud + GitHub Actions)
+
+O build roda no **GitHub Actions**; a Square recebe o zip já compilado (`commit --file … --restart`).
+
+Docs: [Next.js na Square](https://docs.squarecloud.app/pt-br/tutorials/website/nextjs) · [Workflow / Actions](https://help.squarecloud.app/pt-br/article/workflow-github-actions-deploy-automatico-o6c7e2/) · [Integração GitHub](https://help.squarecloud.app/pt-br/article/como-integrar-seu-repositorio-do-github-e-fazer-deploy-automatico-1nk6gr9/)
+
+### 1. App na Square (uma vez)
+
+1. Crie a aplicação web no painel (ou faça o primeiro upload).
+2. Copie o **Application ID**.
+3. Em **Minha conta → API**, gere o **token**.
+4. Preencha as variáveis do [`.env.production.example`](./.env.production.example) em **Variáveis de Ambiente**.
+5. Coloque certificados Postgres/EFI nos arquivos da app (nunca no Git).
+
+### 2. Secrets no GitHub (`Settings → Secrets and variables → Actions`)
+
+| Secret | Onde pegar |
+|--------|------------|
+| `SQUARE_CLOUD_TOKEN` | Dashboard Square → API token |
+| `SQUARECLOUD_APP_ID` | ID da aplicação na Square |
+
+### 3. Deploy
+
+- Push em `main` / `master`, ou
+- Actions → **Deploy Square Cloud** → **Run workflow**
+
+Workflow: [`.github/workflows/deploy-squarecloud.yml`](./.github/workflows/deploy-squarecloud.yml)
+
+No banco novo (uma vez, local apontando para prod + SSL):
+
+```bash
+npx prisma db push
+npm run db:secure
+npx prisma db seed
+```
+
+Health: `GET https://www.api.elloot.com.br/api/health`
+
+Fronts usam o mesmo padrão de Actions (build no GitHub → commit na Square).
+
 
 ## Segurança
 

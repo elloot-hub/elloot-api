@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   withRlsTransaction,
+  withServiceTransaction,
   type RlsActor,
 } from "../../databases";
 import { asyncHandler } from "../../lib/async-handler";
@@ -16,7 +17,8 @@ import {
   verifyAccessToken,
 } from "../../middleware/auth";
 import { revokeAccessToken } from "../auth/token-revoke";
-import { createListingSchema, reorderOffersSchema, updateListingSchema } from "./listings.schemas";
+import { createListingSchema, reorderOffersSchema, updateListingSchema, updateListingStockSchema } from "./listings.schemas";
+import { createWithPublicCode } from "../../lib/create-with-code";
 import {
   assertLeafCategory,
   resolveOwnedListingMedia,
@@ -39,6 +41,17 @@ import {
   listingEventBodySchema,
   recordListingEvent,
 } from "./listings.events";
+import {
+  loadOwnerAutoStockLines,
+  loadOwnerAutoStockItems,
+  normalizeAutoStockLines,
+  appendAutoStockLines,
+  removeAutoStockItems,
+  reconcileAutoStockQuantity,
+  syncListingAutoStock,
+  syncOfferAutoStock,
+} from "./delivery-stock.service";
+import { listingWhereByRef } from "./listing-ref";
 
 export const listingsRouter = Router();
 
@@ -111,11 +124,35 @@ listingsRouter.get(
         rows.map(async (row) => {
           const pending = await getPendingModerationForListingTx(tx, row.id);
           const { moderationNote, submittedForReviewAt, ...listing } = row;
-          return attachModerationMeta(listing, {
+          const payload = attachModerationMeta(listing, {
             moderationNote,
             submittedForReviewAt,
             pendingModeration: pending,
-          });
+          }) as Record<string, unknown>;
+
+          if (listing.listingModel === "DYNAMIC") {
+            payload.offers = await Promise.all(
+              listing.offers.map(async (offer) => ({
+                ...offer,
+                autoStockItems:
+                  offer.deliveryMode === "AUTO"
+                    ? await loadOwnerAutoStockItems(tx, { offerId: offer.id })
+                    : [],
+                autoStockLines:
+                  offer.deliveryMode === "AUTO"
+                    ? await loadOwnerAutoStockLines(tx, { offerId: offer.id })
+                    : [],
+              })),
+            );
+          } else if (listing.deliveryMode === "AUTO") {
+            const items = await loadOwnerAutoStockItems(tx, {
+              listingId: listing.id,
+            });
+            payload.autoStockItems = items;
+            payload.autoStockLines = items.map((i) => i.content);
+          }
+
+          return payload;
         }),
       );
     });
@@ -158,46 +195,51 @@ listingsRouter.post(
         mediaUrls: body.mediaUrls,
       });
 
-      const listing = await tx.listing.create({
-        data: {
-          sellerId: actor.id,
-          categoryId: body.categoryId,
-          title,
-          description,
-          priceCents,
-          stockQuantity: body.stockQuantity ?? 1,
-          productType: body.productType ?? null,
-          listingModel,
-          deliveryMode:
-            listingModel === "DYNAMIC"
-              ? offers.some((o) => o.deliveryMode === "AUTO")
-                ? "AUTO"
-                : "MANUAL"
-              : (body.deliveryMode ?? "MANUAL"),
-          status: body.publish ? "PENDING_REVIEW" : "DRAFT",
-          submittedForReviewAt: body.publish ? new Date() : null,
-          media: mediaRows.length
-            ? {
-                create: mediaRows.map((row) => ({
-                  url: row.url,
-                  sortOrder: row.sortOrder,
-                })),
-              }
-            : undefined,
-          offers:
-            listingModel === "DYNAMIC"
-              ? {
-                  create: offers.map((offer, index) => ({
-                    title: sanitizeUserText(offer.title, 120),
-                    priceCents: offer.priceCents,
-                    stockQuantity: offer.stockQuantity ?? 1,
-                    deliveryMode: offer.deliveryMode ?? "MANUAL",
-                    sortOrder: index,
-                  })),
-                }
-              : undefined,
-        },
-        select: listingPublicSelect,
+      const listing = await createWithPublicCode({
+        kind: "LST",
+        create: (code) =>
+          tx.listing.create({
+            data: {
+              code,
+              sellerId: actor.id,
+              categoryId: body.categoryId,
+              title,
+              description,
+              priceCents,
+              stockQuantity: body.stockQuantity ?? 1,
+              productType: body.productType ?? null,
+              listingModel,
+              deliveryMode:
+                listingModel === "DYNAMIC"
+                  ? offers.some((o) => o.deliveryMode === "AUTO")
+                    ? "AUTO"
+                    : "MANUAL"
+                  : (body.deliveryMode ?? "MANUAL"),
+              status: body.publish ? "PENDING_REVIEW" : "DRAFT",
+              submittedForReviewAt: body.publish ? new Date() : null,
+              media: mediaRows.length
+                ? {
+                    create: mediaRows.map((row) => ({
+                      url: row.url,
+                      sortOrder: row.sortOrder,
+                    })),
+                  }
+                : undefined,
+              offers:
+                listingModel === "DYNAMIC"
+                  ? {
+                      create: offers.map((offer, index) => ({
+                        title: sanitizeUserText(offer.title, 120),
+                        priceCents: offer.priceCents,
+                        stockQuantity: offer.stockQuantity ?? 1,
+                        deliveryMode: offer.deliveryMode ?? "MANUAL",
+                        sortOrder: index,
+                      })),
+                    }
+                  : undefined,
+            },
+            select: listingPublicSelect,
+          }),
       });
 
       if (body.publish) {
@@ -212,7 +254,44 @@ listingsRouter.post(
         });
       }
 
-      return listing;
+      if (listingModel === "DYNAMIC") {
+        const createdOffers = await tx.listingOffer.findMany({
+          where: { listingId: listing.id },
+          orderBy: { sortOrder: "asc" },
+          select: { id: true },
+        });
+        for (let i = 0; i < offers.length; i++) {
+          const input = offers[i]!;
+          if ((input.deliveryMode ?? "MANUAL") === "AUTO") {
+            const lines = normalizeAutoStockLines(input.autoStockLines);
+            if (!lines.length) {
+              throw new AppError(
+                400,
+                "Auto stock lines required for offer",
+                "VALIDATION_ERROR",
+              );
+            }
+            const offerId = createdOffers[i]?.id;
+            if (!offerId) continue;
+            await syncOfferAutoStock(tx, offerId, lines);
+          }
+        }
+      } else if ((body.deliveryMode ?? "MANUAL") === "AUTO") {
+        const lines = normalizeAutoStockLines(body.autoStockLines);
+        if (!lines.length) {
+          throw new AppError(
+            400,
+            "Auto stock lines required",
+            "VALIDATION_ERROR",
+          );
+        }
+        await syncListingAutoStock(tx, listing.id, lines);
+      }
+
+      return tx.listing.findUniqueOrThrow({
+        where: { id: listing.id },
+        select: listingPublicSelect,
+      });
     });
 
     if (promotedToSeller) {
@@ -256,10 +335,10 @@ listingsRouter.post(
   "/:id/events",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const id = routeParam(req.params.id);
+    const ref = routeParam(req.params.id);
     const body = listingEventBodySchema.parse(req.body);
     const result = await recordListingEvent({
-      listingId: id,
+      listingId: ref,
       type: body.type,
       visitorKey: body.visitorKey,
       viewerUserId: req.user?.id ?? null,
@@ -273,14 +352,14 @@ listingsRouter.get(
   "/:id",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const id = routeParam(req.params.id);
+    const ref = routeParam(req.params.id);
     const actor = req.user
       ? { id: req.user.id, role: req.user.role }
       : null;
 
     const row = await withRlsTransaction({ actor }, async (tx) => {
       const listing = await tx.listing.findUnique({
-        where: { id },
+        where: listingWhereByRef(ref),
         select: {
           ...listingPublicSelect,
           moderationNote: true,
@@ -297,7 +376,10 @@ listingsRouter.get(
 
       let pendingModeration = null;
       if (isOwner) {
-        pendingModeration = await getPendingModerationForListingTx(tx, id);
+        pendingModeration = await getPendingModerationForListingTx(
+          tx,
+          listing.id,
+        );
       }
 
       return { listing, isOwner, pendingModeration };
@@ -305,6 +387,28 @@ listingsRouter.get(
 
     if (!row || row.listing.status === "REMOVED") {
       throw new AppError(404, "Listing not found", "LISTING_NOT_FOUND");
+    }
+
+    // Align displayed stock with real auto-delivery keys (legacy listings
+    // may have stockQuantity without delivery_stock_items rows).
+    if (row.listing.deliveryMode === "AUTO" || row.listing.offers.some((o) => o.deliveryMode === "AUTO")) {
+      await withServiceTransaction(async (tx) => {
+        if (row.listing.listingModel === "DYNAMIC") {
+          for (const offer of row.listing.offers) {
+            if (offer.deliveryMode === "AUTO") {
+              const available = await reconcileAutoStockQuantity(tx, {
+                listingId: row.listing.id,
+                offerId: offer.id,
+              });
+              offer.stockQuantity = available;
+            }
+          }
+        } else if (row.listing.deliveryMode === "AUTO") {
+          row.listing.stockQuantity = await reconcileAutoStockQuantity(tx, {
+            listingId: row.listing.id,
+          });
+        }
+      });
     }
 
     const reviewRows = await withRlsTransaction({ actor }, (tx) =>
@@ -328,6 +432,44 @@ listingsRouter.get(
       unknown
     >;
     if (row.isOwner) {
+      const ownerStock = await withRlsTransaction({ actor }, async (tx) => {
+        if (row.listing.listingModel === "DYNAMIC") {
+          const offerLines: Record<string, string[]> = {};
+          const offerItems: Record<string, Array<{ id: string; content: string }>> =
+            {};
+          for (const offer of row.listing.offers) {
+            const items = await loadOwnerAutoStockItems(tx, {
+              offerId: offer.id,
+            });
+            offerItems[offer.id] = items;
+            offerLines[offer.id] = items.map((i) => i.content);
+          }
+          return { offerLines, offerItems };
+        }
+        const items = await loadOwnerAutoStockItems(tx, {
+          listingId: row.listing.id,
+        });
+        return {
+          lines: items.map((i) => i.content),
+          items,
+        };
+      });
+
+      if (row.listing.listingModel === "DYNAMIC" && ownerStock.offerLines) {
+        listingPayload.offers = (
+          listingPayload.offers as Array<Record<string, unknown>>
+        ).map((offer) => ({
+          ...offer,
+          autoStockLines:
+            ownerStock.offerLines[(offer.id as string) ?? ""] ?? [],
+          autoStockItems:
+            ownerStock.offerItems?.[(offer.id as string) ?? ""] ?? [],
+        }));
+      } else if (ownerStock.lines) {
+        listingPayload.autoStockLines = ownerStock.lines;
+        listingPayload.autoStockItems = ownerStock.items ?? [];
+      }
+
       listingPayload = attachModerationMeta(listingPayload, {
         moderationNote,
         submittedForReviewAt,
@@ -609,6 +751,165 @@ listingsRouter.patch(
   }),
 );
 
+listingsRouter.patch(
+  "/:id/stock",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = updateListingStockSchema.parse(req.body);
+    const actor = actorOf(req);
+    const ref = routeParam(req.params.id);
+
+    const listing = await withRlsTransaction({ actor }, async (tx) => {
+      const owned = await getOwnedListingTx(tx, ref, actor);
+      if (owned.status === "REMOVED" || owned.status === "SOLD") {
+        // Allow restocking SOLD auto/manual listings so they can reopen.
+        if (owned.status === "REMOVED") {
+          throw new AppError(409, "Listing removed", "LISTING_REMOVED");
+        }
+      }
+
+      if (owned.listingModel === "DYNAMIC") {
+        if (!body.offerId) {
+          throw new AppError(400, "offerId is required", "OFFER_REQUIRED");
+        }
+        const offer = await tx.listingOffer.findFirst({
+          where: { id: body.offerId, listingId: owned.id },
+          select: { id: true, deliveryMode: true },
+        });
+        if (!offer) {
+          throw new AppError(404, "Offer not found", "OFFER_NOT_FOUND");
+        }
+
+        if (offer.deliveryMode === "AUTO") {
+          if (body.replaceLines !== undefined) {
+            await syncOfferAutoStock(tx, offer.id, body.replaceLines);
+          }
+          if (body.removeItemIds?.length) {
+            await removeAutoStockItems(
+              tx,
+              { listingId: owned.id, offerId: offer.id },
+              body.removeItemIds,
+            );
+          }
+          if (body.appendLines?.length) {
+            await appendAutoStockLines(
+              tx,
+              { listingId: owned.id, offerId: offer.id },
+              body.appendLines,
+            );
+          }
+        } else {
+          if (body.stockQuantity === undefined) {
+            throw new AppError(
+              400,
+              "stockQuantity is required for manual delivery",
+              "VALIDATION_ERROR",
+            );
+          }
+          await tx.listingOffer.update({
+            where: { id: offer.id },
+            data: { stockQuantity: body.stockQuantity },
+          });
+        }
+      } else if (owned.deliveryMode === "AUTO") {
+        if (body.replaceLines !== undefined) {
+          await syncListingAutoStock(tx, owned.id, body.replaceLines);
+        }
+        if (body.removeItemIds?.length) {
+          await removeAutoStockItems(
+            tx,
+            { listingId: owned.id },
+            body.removeItemIds,
+          );
+        }
+        if (body.appendLines?.length) {
+          await appendAutoStockLines(
+            tx,
+            { listingId: owned.id },
+            body.appendLines,
+          );
+        }
+      } else {
+        if (body.stockQuantity === undefined) {
+          throw new AppError(
+            400,
+            "stockQuantity is required for manual delivery",
+            "VALIDATION_ERROR",
+          );
+        }
+        await tx.listing.update({
+          where: { id: owned.id },
+          data: { stockQuantity: body.stockQuantity },
+        });
+      }
+
+      // Reopen SOLD listings when stock returns.
+      const refreshed = await tx.listing.findUniqueOrThrow({
+        where: { id: owned.id },
+        select: {
+          id: true,
+          status: true,
+          listingModel: true,
+          stockQuantity: true,
+          offers: { select: { stockQuantity: true } },
+        },
+      });
+      const hasStock =
+        refreshed.listingModel === "DYNAMIC"
+          ? refreshed.offers.some((o) => o.stockQuantity > 0)
+          : refreshed.stockQuantity > 0;
+      if (refreshed.status === "SOLD" && hasStock) {
+        await tx.listing.update({
+          where: { id: owned.id },
+          data: { status: "ACTIVE" },
+        });
+      } else if (
+        (refreshed.status === "ACTIVE" || refreshed.status === "PAUSED") &&
+        !hasStock
+      ) {
+        await tx.listing.update({
+          where: { id: owned.id },
+          data: { status: "SOLD" },
+        });
+      }
+
+      return tx.listing.findUniqueOrThrow({
+        where: { id: owned.id },
+        select: listingPublicSelect,
+      });
+    });
+
+    // Attach owner stock items for the dialog refresh.
+    const enriched = await withRlsTransaction({ actor }, async (tx) => {
+      const payload = { ...listing } as Record<string, unknown>;
+      if (listing.listingModel === "DYNAMIC") {
+        payload.offers = await Promise.all(
+          listing.offers.map(async (offer) => ({
+            ...offer,
+            autoStockItems:
+              offer.deliveryMode === "AUTO"
+                ? await loadOwnerAutoStockItems(tx, { offerId: offer.id })
+                : [],
+            autoStockLines:
+              offer.deliveryMode === "AUTO"
+                ? await loadOwnerAutoStockLines(tx, { offerId: offer.id })
+                : [],
+          })),
+        );
+      } else if (listing.deliveryMode === "AUTO") {
+        const items = await loadOwnerAutoStockItems(tx, {
+          listingId: listing.id,
+        });
+        payload.autoStockItems = items;
+        payload.autoStockLines = items.map((i) => i.content);
+      }
+      return payload;
+    });
+
+    res.json({ listing: enriched });
+  }),
+);
+
 listingsRouter.post(
   "/:id/pause",
   requireAuth,
@@ -676,10 +977,10 @@ listingsRouter.delete(
 
 async function getOwnedListingTx(
   tx: Parameters<Parameters<typeof withRlsTransaction>[1]>[0],
-  id: string,
+  ref: string,
   actor: RlsActor,
 ) {
-  const listing = await tx.listing.findUnique({ where: { id } });
+  const listing = await tx.listing.findUnique({ where: listingWhereByRef(ref) });
   if (!listing || listing.status === "REMOVED") {
     throw new AppError(404, "Listing not found", "LISTING_NOT_FOUND");
   }

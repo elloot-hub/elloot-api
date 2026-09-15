@@ -7,6 +7,11 @@ import {
   assertLeafCategory,
   resolveOwnedListingMedia,
 } from "./listings.media";
+import {
+  syncListingAutoStock,
+  syncOfferAutoStock,
+  countAvailableStock,
+} from "./delivery-stock.service";
 import { listingPublicSelect } from "./listings.shared";
 
 type Tx = Prisma.TransactionClient;
@@ -18,6 +23,7 @@ export type RevisionPayload = {
   description?: string;
   productType?: string | null;
   deliveryMode?: "MANUAL" | "AUTO";
+  autoStockLines?: string[];
   priceCents?: number;
   stockQuantity?: number;
   mediaAssetIds?: string[];
@@ -28,6 +34,7 @@ export type RevisionPayload = {
     priceCents: number;
     stockQuantity?: number;
     deliveryMode?: "MANUAL" | "AUTO";
+    autoStockLines?: string[];
   }>;
 };
 
@@ -286,6 +293,7 @@ export async function applyOffersUpdateTx(
     priceCents: number;
     stockQuantity?: number;
     deliveryMode?: "MANUAL" | "AUTO";
+    autoStockLines?: string[];
   }>,
   options?: { priceStockOnly?: boolean },
 ) {
@@ -316,6 +324,7 @@ export async function applyOffersUpdateTx(
   for (const [index, offer] of offers.entries()) {
     const title = sanitizeUserText(offer.title, 120);
     const deliveryMode = offer.deliveryMode ?? "MANUAL";
+    let offerId = offer.id;
 
     if (offer.id) {
       const prev = ownedOffers.find((o) => o.id === offer.id);
@@ -324,7 +333,7 @@ export async function applyOffersUpdateTx(
         data: {
           ...(options?.priceStockOnly ? {} : { title, deliveryMode }),
           priceCents: offer.priceCents,
-          ...(offer.stockQuantity !== undefined
+          ...(offer.stockQuantity !== undefined && deliveryMode === "MANUAL"
             ? { stockQuantity: offer.stockQuantity }
             : {}),
           sortOrder: index,
@@ -337,7 +346,7 @@ export async function applyOffersUpdateTx(
         });
       }
     } else if (!options?.priceStockOnly) {
-      await tx.listingOffer.create({
+      const created = await tx.listingOffer.create({
         data: {
           listingId,
           title,
@@ -346,7 +355,23 @@ export async function applyOffersUpdateTx(
           deliveryMode,
           sortOrder: index,
         },
+        select: { id: true },
       });
+      offerId = created.id;
+    }
+
+    if (
+      !options?.priceStockOnly &&
+      offer.autoStockLines !== undefined &&
+      offerId
+    ) {
+      if (deliveryMode === "AUTO") {
+        await syncOfferAutoStock(tx, offerId, offer.autoStockLines);
+      } else {
+        await tx.deliveryStockItem.deleteMany({
+          where: { offerId, status: "AVAILABLE" },
+        });
+      }
     }
   }
 
@@ -403,6 +428,18 @@ export async function applyListingUpdateTx(
     offerDerived = await applyOffersUpdateTx(tx, listing.id, body.offers);
   }
 
+  if (
+    body.autoStockLines !== undefined &&
+    listing.listingModel !== "DYNAMIC"
+  ) {
+    await syncListingAutoStock(tx, listing.id, body.autoStockLines);
+  }
+
+  const listingStockQty =
+    body.autoStockLines !== undefined && listing.listingModel !== "DYNAMIC"
+      ? await countAvailableStock(tx, { listingId: listing.id })
+      : body.stockQuantity;
+
   return tx.listing.update({
     where: { id: listing.id },
     data: {
@@ -413,7 +450,7 @@ export async function applyListingUpdateTx(
         : undefined,
       productType: body.productType,
       priceCents: body.priceCents ?? offerDerived?.priceCents,
-      stockQuantity: body.stockQuantity,
+      stockQuantity: listingStockQty,
       deliveryMode: body.deliveryMode ?? offerDerived?.deliveryMode,
     },
     select: listingPublicSelect,
@@ -592,7 +629,7 @@ export async function approveModerationTx(
     });
   }
 
-  return tx.listingModerationQueue.update({
+  const updated = await tx.listingModerationQueue.update({
     where: { id: queueId },
     data: {
       status: "APPROVED",
@@ -600,6 +637,21 @@ export async function approveModerationTx(
       reviewedAt: new Date(),
     },
   });
+
+  await tx.auditLog.create({
+    data: {
+      actorId: reviewerId,
+      action: "listing.moderation.approved",
+      entityType: "ListingModerationQueue",
+      entityId: queueId,
+      meta: {
+        listingId: item.listingId,
+        type: item.type,
+      },
+    },
+  });
+
+  return updated;
 }
 
 export async function rejectModerationTx(
@@ -629,7 +681,7 @@ export async function rejectModerationTx(
     });
   }
 
-  return tx.listingModerationQueue.update({
+  const updated = await tx.listingModerationQueue.update({
     where: { id: queueId },
     data: {
       status: "REJECTED",
@@ -638,6 +690,22 @@ export async function rejectModerationTx(
       reviewedAt: new Date(),
     },
   });
+
+  await tx.auditLog.create({
+    data: {
+      actorId: reviewerId,
+      action: "listing.moderation.rejected",
+      entityType: "ListingModerationQueue",
+      entityId: queueId,
+      meta: {
+        listingId: item.listingId,
+        type: item.type,
+        reviewNote: note,
+      },
+    },
+  });
+
+  return updated;
 }
 
 export type ListingSnapshot = {
@@ -815,10 +883,13 @@ export const moderationQueueListSelect = {
   listing: {
     select: {
       id: true,
+      code: true,
       title: true,
       status: true,
       priceCents: true,
       listingModel: true,
+      deliveryMode: true,
+      productType: true,
       submittedForReviewAt: true,
       moderationNote: true,
       createdAt: true,
@@ -851,6 +922,10 @@ export function serializeModerationQueueItem(
     select: typeof moderationQueueListSelect;
   }>,
 ) {
+  const ageHours = Math.max(
+    0,
+    (Date.now() - row.createdAt.getTime()) / 3_600_000,
+  );
   return {
     id: row.id,
     listingId: row.listingId,
@@ -861,12 +936,23 @@ export function serializeModerationQueueItem(
     reviewedAt: row.reviewedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    ageHours,
     listing: {
-      ...row.listing,
+      id: row.listing.id,
+      code: row.listing.code,
+      title: row.listing.title,
+      status: row.listing.status,
+      priceCents: row.listing.priceCents,
+      listingModel: row.listing.listingModel,
+      deliveryMode: row.listing.deliveryMode,
+      productType: row.listing.productType,
       submittedForReviewAt:
         row.listing.submittedForReviewAt?.toISOString() ?? null,
+      moderationNote: row.listing.moderationNote,
+      createdAt: row.listing.createdAt.toISOString(),
       coverUrl: row.listing.media[0]?.url ?? null,
-      media: undefined,
+      seller: row.listing.seller,
+      category: row.listing.category,
     },
   };
 }

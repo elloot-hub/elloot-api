@@ -4,6 +4,7 @@ import { asyncHandler } from "../../lib/async-handler";
 import { AppError } from "../../lib/errors";
 import { routeParam } from "../../lib/route-param";
 import { requireAuth } from "../../middleware/auth";
+import { loadWalletSummary } from "./wallet.service";
 
 export const walletRouter = Router();
 
@@ -11,33 +12,15 @@ function actorOf(req: { user?: RlsActor }): RlsActor {
   return { id: req.user!.id, role: req.user!.role };
 }
 
-/** Read-only wallet. Ledger is append-only at DB level; no user write routes. */
+/** Read-only wallet with release breakdown. */
 walletRouter.get(
   "/",
   requireAuth,
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    const data = await withRlsTransaction({ actor }, async (tx) => {
-      const last = await tx.walletLedger.findFirst({
-        where: { userId: actor.id },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      });
-      const entries = await tx.walletLedger.findMany({
-        where: { userId: actor.id },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: 50,
-        select: {
-          id: true,
-          type: true,
-          amountCents: true,
-          balanceAfter: true,
-          description: true,
-          orderId: true,
-          createdAt: true,
-        },
-      });
-      return { balanceCents: last?.balanceAfter ?? 0, entries };
-    });
+    const data = await withRlsTransaction({ actor }, (tx) =>
+      loadWalletSummary(tx, actor.id),
+    );
     res.json(data);
   }),
 );

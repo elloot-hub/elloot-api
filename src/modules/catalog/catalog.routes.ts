@@ -23,6 +23,7 @@ const categoryPublicSelect = {
   isAdult: true,
   imageUrl: true,
   iconUrl: true,
+  icon: true,
   hasWebp: true,
   templateDescription: true,
   balanceReleaseDays: true,
@@ -56,6 +57,7 @@ type CategoryRow = {
   isAdult: boolean;
   imageUrl: string | null;
   iconUrl: string | null;
+  icon: string | null;
   hasWebp: boolean;
   templateDescription: string | null;
   balanceReleaseDays: number;
@@ -89,6 +91,7 @@ type SerializedCategory = {
   isAdult: boolean;
   imageUrl: string | null;
   iconUrl: string | null;
+  icon: string | null;
   hasWebp: boolean;
   templateDescription: string | null;
   balanceReleaseDays: number;
@@ -127,6 +130,7 @@ function serializeCategory(
     isAdult: row.isAdult,
     imageUrl: row.imageUrl,
     iconUrl: row.iconUrl,
+    icon: row.icon,
     hasWebp: row.hasWebp,
     templateDescription: row.templateDescription,
     balanceReleaseDays: row.balanceReleaseDays,
@@ -387,6 +391,22 @@ catalogRouter.get(
             ...(Number.isFinite(maxPrice) ? { lte: maxPrice } : {}),
           }
         : undefined;
+    const sortRaw =
+      typeof req.query.sort === "string" ? req.query.sort.trim() : "recent";
+    const orderBy: Prisma.ListingOrderByWithRelationInput[] =
+      sortRaw === "price_asc"
+        ? [{ priceCents: "asc" }, { id: "asc" }]
+        : sortRaw === "price_desc"
+          ? [{ priceCents: "desc" }, { id: "desc" }]
+          : sortRaw === "best_sellers" || sortRaw === "bestsellers"
+            ? [{ salesCount: "desc" }, { createdAt: "desc" }, { id: "desc" }]
+            : sortRaw === "reputation"
+              ? [
+                  { seller: { reputationScore: "desc" } },
+                  { salesCount: "desc" },
+                  { id: "desc" },
+                ]
+              : [{ createdAt: "desc" }, { id: "desc" }];
 
     const listings = await withRlsTransaction({ actor: null }, async (tx) => {
       let categoryFilter: Prisma.CategoryWhereInput | undefined;
@@ -435,9 +455,10 @@ catalogRouter.get(
         },
         take,
         ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        orderBy,
         select: {
           id: true,
+          code: true,
           title: true,
           priceCents: true,
           status: true,
@@ -490,5 +511,90 @@ catalogRouter.get(
       })),
       nextCursor,
     });
+  }),
+);
+
+/**
+ * Listing counts for a category and its direct children (sidebar badges).
+ * Query: `?category=` id | slug | slugPath
+ */
+catalogRouter.get(
+  "/category-stats",
+  asyncHandler(async (req, res) => {
+    const category =
+      typeof req.query.category === "string" ? req.query.category.trim() : "";
+    if (!category) {
+      res.json({ total: 0, children: [] });
+      return;
+    }
+
+    const data = await withRlsTransaction({ actor: null }, async (tx) => {
+      const match = await tx.category.findFirst({
+        where: {
+          status: "ACTIVE",
+          OR: [
+            { id: category },
+            { slug: category },
+            { slugPath: category },
+            { slugPath: { endsWith: `/${category}` } },
+          ],
+        },
+        select: {
+          id: true,
+          slugPath: true,
+          children: {
+            where: { status: "ACTIVE" },
+            orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+            select: { id: true, slug: true, slugPath: true, name: true },
+          },
+        },
+      });
+      if (!match) return null;
+
+      const total = await tx.listing.count({
+        where: {
+          status: "ACTIVE",
+          category: {
+            status: "ACTIVE",
+            OR: [
+              { id: match.id },
+              { slugPath: { startsWith: `${match.slugPath}/` } },
+            ],
+          },
+        },
+      });
+
+      const children = await Promise.all(
+        match.children.map(async (child) => {
+          const count = await tx.listing.count({
+            where: {
+              status: "ACTIVE",
+              category: {
+                status: "ACTIVE",
+                OR: [
+                  { id: child.id },
+                  { slugPath: { startsWith: `${child.slugPath}/` } },
+                ],
+              },
+            },
+          });
+          return {
+            id: child.id,
+            slug: child.slug,
+            slugPath: child.slugPath,
+            name: child.name,
+            count,
+          };
+        }),
+      );
+
+      return { total, children };
+    });
+
+    if (!data) {
+      res.json({ total: 0, children: [] });
+      return;
+    }
+    res.json(data);
   }),
 );

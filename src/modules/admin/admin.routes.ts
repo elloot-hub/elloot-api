@@ -1,0 +1,32 @@
+import { Router } from "express";
+import { adminAuthRouter } from "../admin-auth/admin-auth.routes";
+import { listingsAdminRouter } from "../listings/listings.admin.routes";
+import {
+  enforceAdminIpAllowlist,
+  requireAdminAuth,
+} from "../../middleware/admin-auth";
+import { adminStatsRouter } from "./admin-stats.routes";
+import { adminDisputesRouter } from "./admin-disputes.routes";
+import { adminUsersRouter } from "./admin-users.routes";
+import { adminOrdersRouter } from "./admin-orders.routes";
+import { adminFinanceRouter } from "./admin-finance.routes";
+import { adminAuditRouter } from "./admin-audit.routes";
+import { adminCategoriesRouter } from "./admin-categories.routes";
+import { adminMediaRouter } from "./admin-media.routes";
+import { adminChatsRouter } from "./admin-chats.routes";
+
+export const adminRouter = Router();
+
+adminRouter.use(enforceAdminIpAllowlist);
+adminRouter.use("/auth", adminAuthRouter);
+adminRouter.use(requireAdminAuth);
+adminRouter.use("/stats", adminStatsRouter);
+adminRouter.use("/listings", listingsAdminRouter);
+adminRouter.use("/disputes", adminDisputesRouter);
+adminRouter.use("/users", adminUsersRouter);
+adminRouter.use("/orders", adminOrdersRouter);
+adminRouter.use("/finance", adminFinanceRouter);
+adminRouter.use("/audit", adminAuditRouter);
+adminRouter.use("/categories", adminCategoriesRouter);
+adminRouter.use("/media", adminMediaRouter);
+adminRouter.use("/chats", adminChatsRouter);

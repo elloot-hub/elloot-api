@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { AppError } from "../../lib/errors";
 import { withServiceTransaction } from "../../databases";
+import { listingWhereByRef } from "./listing-ref";
 
 export const listingEventBodySchema = z.object({
   type: z.enum(["VIEW", "PURCHASE_INTENT"]),
@@ -25,7 +26,7 @@ export async function recordListingEvent(input: {
 }) {
   return withServiceTransaction(async (tx) => {
     const listing = await tx.listing.findUnique({
-      where: { id: input.listingId },
+      where: listingWhereByRef(input.listingId),
       select: {
         id: true,
         sellerId: true,

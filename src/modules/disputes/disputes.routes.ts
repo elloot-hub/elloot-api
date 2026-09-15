@@ -7,6 +7,7 @@ import type { RlsActor } from "../../databases";
 import { openDispute, resolveDispute } from "./disputes.service";
 import { withRlsTransaction } from "../../databases";
 import { AppError } from "../../lib/errors";
+import { disputeWhereByRef } from "../../lib/entity-ref";
 
 export const disputesRouter = Router();
 
@@ -27,6 +28,7 @@ function actorOf(req: { user?: RlsActor }): RlsActor {
 
 const disputeSelect = {
   id: true,
+  code: true,
   orderId: true,
   openedById: true,
   reason: true,
@@ -38,12 +40,13 @@ const disputeSelect = {
   order: {
     select: {
       id: true,
+      code: true,
       status: true,
       amountCents: true,
       feeCents: true,
       buyerId: true,
       sellerId: true,
-      listing: { select: { id: true, title: true } },
+      listing: { select: { id: true, code: true, title: true } },
     },
   },
 } as const;
@@ -91,9 +94,9 @@ disputesRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const actor = actorOf(req);
-    const id = routeParam(req.params.id);
+    const ref = routeParam(req.params.id);
     const dispute = await withRlsTransaction({ actor }, (tx) =>
-      tx.dispute.findUnique({ where: { id }, select: disputeSelect }),
+      tx.dispute.findUnique({ where: disputeWhereByRef(ref), select: disputeSelect }),
     );
     if (!dispute) {
       throw new AppError(404, "Dispute not found", "DISPUTE_NOT_FOUND");
