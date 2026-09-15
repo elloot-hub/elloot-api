@@ -48,6 +48,22 @@ jobs:
             prisma \
             -x "prisma/*.db" "prisma/*.db-journal"
 
+      - name: Require Square Cloud secrets
+        env:
+          SQUARE_CLOUD_TOKEN: ${{ secrets.SQUARE_CLOUD_TOKEN }}
+          SQUARECLOUD_APP_ID: ${{ secrets.SQUARECLOUD_APP_ID }}
+        run: |
+          missing=0
+          if [ -z "$SQUARE_CLOUD_TOKEN" ]; then
+            echo "::error::Secret SQUARE_CLOUD_TOKEN não configurado. Settings → Secrets and variables → Actions."
+            missing=1
+          fi
+          if [ -z "$SQUARECLOUD_APP_ID" ]; then
+            echo "::error::Secret SQUARECLOUD_APP_ID não configurado. Use o ID da app no painel Square Cloud."
+            missing=1
+          fi
+          exit $missing
+
       - name: Deploy on Square Cloud
         uses: squarecloudofc/github-action@v2
         with:
