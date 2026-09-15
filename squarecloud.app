@@ -6,4 +6,4 @@ VERSION=recommended
 RUNTIME=nodejs
 AUTORESTART=true
 SUBDOMAIN=elloot-api
-START=npx prisma generate && npm start
+START=npx prisma generate && npm run build && npm start
