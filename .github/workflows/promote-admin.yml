@@ -1,0 +1,73 @@
+name: Promote Admin
+
+# Promote an existing marketplace user to ADMIN (role only).
+# Required secrets: DATABASE_URL, DATABASE_SSL_CERT
+# Optional: DATABASE_SSL_P12_PASSWORD (default elloot)
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: User email to promote to ADMIN
+        required: true
+        type: string
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Require DB secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SSL_CERT: ${{ secrets.DATABASE_SSL_CERT }}
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$DATABASE_SSL_CERT" ]; then
+            echo "::error::Configure secrets DATABASE_URL and DATABASE_SSL_CERT, then re-run."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write SSL cert
+        env:
+          DATABASE_SSL_CERT: ${{ secrets.DATABASE_SSL_CERT }}
+        run: |
+          mkdir -p src/databases/postgres/certificates
+          printf '%s\n' "$DATABASE_SSL_CERT" > src/databases/postgres/certificates/certificate.pem
+
+      - name: Normalize DATABASE_URL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          node <<'NODE'
+          const raw = process.env.DATABASE_URL || "";
+          const u = new URL(raw);
+          let db = u.pathname.replace(/^\//, "").split("?")[0] || "";
+          if (u.hostname.includes("squareweb.app") && (db === "postgres" || db === "")) {
+            db = "squarecloud";
+            u.pathname = "/squarecloud";
+          }
+          console.log(`DB target user=${u.username} host=${u.hostname} db=${db}`);
+          const fs = require("fs");
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `DATABASE_URL<<EOF\n${u.toString()}\nEOF\n`,
+          );
+          NODE
+
+      - name: Promote to ADMIN
+        env:
+          NODE_ENV: development
+          DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
+          DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
+          ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
+        run: npx tsx scripts/promote-admin.ts "${{ inputs.email }}"
