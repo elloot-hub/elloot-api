@@ -537,10 +537,7 @@ adminChatsRouter.post(
       authorName: displayName(message.sender) ?? "Equipe",
       internal: false,
       body: message.body,
-      sentAt:
-        typeof message.createdAt === "string"
-          ? message.createdAt
-          : message.createdAt.toISOString(),
+      sentAt: message.createdAt,
       readByBuyer: false,
       readBySeller: false,
     });
@@ -579,10 +576,7 @@ adminChatsRouter.post(
       authorName: displayName(message.sender) ?? "Equipe",
       internal: true,
       body: message.body,
-      sentAt:
-        typeof message.createdAt === "string"
-          ? message.createdAt
-          : message.createdAt.toISOString(),
+      sentAt: message.createdAt,
     });
   }),
 );
