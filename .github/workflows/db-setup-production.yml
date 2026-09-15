@@ -1,0 +1,73 @@
+name: DB Setup Production
+
+# One-shot: prisma db push + db:secure + seed against Square Cloud Postgres.
+# Required secrets (Settings → Actions):
+#   DATABASE_URL          — connection string (no SSL query params needed)
+#   DATABASE_SSL_CERT     — full contents of certificate.pem from Square dashboard
+# Optional:
+#   DATABASE_SSL_P12_PASSWORD — default elloot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Require DB secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SSL_CERT: ${{ secrets.DATABASE_SSL_CERT }}
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$DATABASE_SSL_CERT" ]; then
+            echo "::error::Configure secrets DATABASE_URL and DATABASE_SSL_CERT, then re-run."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write SSL cert
+        env:
+          DATABASE_SSL_CERT: ${{ secrets.DATABASE_SSL_CERT }}
+        run: |
+          mkdir -p src/databases/postgres/certificates
+          printf '%s\n' "$DATABASE_SSL_CERT" > src/databases/postgres/certificates/certificate.pem
+
+      - name: Prisma db push
+        env:
+          NODE_ENV: development
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
+          DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
+          ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
+        run: npx tsx scripts/with-db-env.ts npx prisma db push
+
+      - name: Apply RLS (db:secure)
+        env:
+          NODE_ENV: development
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
+          DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
+          ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
+        run: npm run db:secure
+
+      - name: Seed
+        env:
+          NODE_ENV: development
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
+          DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
+          ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
+        run: npx tsx scripts/with-db-env.ts npx prisma db seed
+        continue-on-error: true
