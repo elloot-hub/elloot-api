@@ -1,6 +1,10 @@
 -- Auto-delivery stock items (keys/credentials per listing or offer)
 
-CREATE TYPE "DeliveryStockStatus" AS ENUM ('AVAILABLE', 'RESERVED', 'CONSUMED');
+DO $$ BEGIN
+  CREATE TYPE "DeliveryStockStatus" AS ENUM ('AVAILABLE', 'RESERVED', 'CONSUMED');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS delivery_stock_items (
   id TEXT PRIMARY KEY,
