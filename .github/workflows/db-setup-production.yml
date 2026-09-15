@@ -91,24 +91,7 @@ jobs:
           DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
           JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
           ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
-        run: |
-          npx tsx -e "
-          import './src/config/env';
-          import { PrismaClient } from '@prisma/client';
-          const prisma = new PrismaClient();
-          const rows = await prisma.\$queryRawUnsafe(
-            \`select current_user as u, current_database() as d,
-              has_schema_privilege(current_user, 'public', 'CREATE') as can_create\`
-          );
-          console.log('session', rows);
-          try {
-            await prisma.\$executeRawUnsafe('GRANT ALL ON SCHEMA public TO CURRENT_USER');
-            await prisma.\$executeRawUnsafe('GRANT CREATE ON SCHEMA public TO CURRENT_USER');
-          } catch (e) {
-            console.warn('grant skipped:', e instanceof Error ? e.message : e);
-          }
-          await prisma.\$disconnect();
-          "
+        run: npx tsx scripts/ensure-public-schema.ts
 
       - name: Prisma db push
         env:
