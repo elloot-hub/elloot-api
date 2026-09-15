@@ -351,7 +351,8 @@ authRouter.post(
     );
 
     // Always 200 — do not reveal whether the email exists.
-    if (!user?.passwordHash) {
+    // OAuth-only accounts (no passwordHash) may still set a first password.
+    if (!user) {
       res.json({ ok: true });
       return;
     }
