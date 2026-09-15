@@ -39,12 +39,80 @@ jobs:
           DATABASE_SSL_CERT: ${{ secrets.DATABASE_SSL_CERT }}
         run: |
           mkdir -p src/databases/postgres/certificates
+          # Preserve PEM newlines; do not trim or reformat key/cert blocks.
           printf '%s\n' "$DATABASE_SSL_CERT" > src/databases/postgres/certificates/certificate.pem
+          if ! grep -q "BEGIN PRIVATE KEY\|BEGIN CERTIFICATE\|BEGIN RSA PRIVATE KEY" \
+            src/databases/postgres/certificates/certificate.pem; then
+            echo "::error::DATABASE_SSL_CERT must be the full certificate.pem (PRIVATE KEY + CERTIFICATE)."
+            exit 1
+          fi
+
+      - name: Normalize DATABASE_URL
+        id: dburl
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          node <<'NODE'
+          const raw = process.env.DATABASE_URL || "";
+          let u;
+          try {
+            u = new URL(raw);
+          } catch {
+            console.error("::error::DATABASE_URL is not a valid URL");
+            process.exit(1);
+          }
+          const host = u.hostname;
+          let db = u.pathname.replace(/^\//, "").split("?")[0] || "";
+          // Square Cloud managed Postgres app DB is usually "squarecloud", not "postgres".
+          if (host.includes("squareweb.app") && (db === "postgres" || db === "")) {
+            console.warn(`Rewriting database path "/${db || ""}" → "/squarecloud" for ${host}`);
+            db = "squarecloud";
+            u.pathname = "/squarecloud";
+          }
+          console.log(`DB target user=${u.username} host=${host} port=${u.port} db=${db}`);
+          if (!db || db === "postgres") {
+            console.error(
+              "::error::DATABASE_URL must use the app database name from Square (e.g. /squarecloud), not /postgres.",
+            );
+            process.exit(1);
+          }
+          const fs = require("fs");
+          const next = u.toString();
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `DATABASE_URL<<EOF\n${next}\nEOF\n`,
+          );
+          NODE
+
+      - name: Ensure public schema privileges
+        env:
+          NODE_ENV: development
+          DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
+          DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
+          ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
+        run: |
+          npx tsx -e "
+          import './src/config/env';
+          import { PrismaClient } from '@prisma/client';
+          const prisma = new PrismaClient();
+          const rows = await prisma.\$queryRawUnsafe(
+            \`select current_user as u, current_database() as d,
+              has_schema_privilege(current_user, 'public', 'CREATE') as can_create\`
+          );
+          console.log('session', rows);
+          try {
+            await prisma.\$executeRawUnsafe('GRANT ALL ON SCHEMA public TO CURRENT_USER');
+            await prisma.\$executeRawUnsafe('GRANT CREATE ON SCHEMA public TO CURRENT_USER');
+          } catch (e) {
+            console.warn('grant skipped:', e instanceof Error ? e.message : e);
+          }
+          await prisma.\$disconnect();
+          "
 
       - name: Prisma db push
         env:
           NODE_ENV: development
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
           DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
           JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
@@ -54,7 +122,6 @@ jobs:
       - name: Apply RLS (db:secure)
         env:
           NODE_ENV: development
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
           DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
           JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
@@ -64,7 +131,6 @@ jobs:
       - name: Seed
         env:
           NODE_ENV: development
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
           DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
           JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
