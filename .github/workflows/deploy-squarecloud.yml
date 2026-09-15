@@ -1,9 +1,7 @@
 name: Deploy Square Cloud
 
-# Build no GitHub Actions e envia o artefato pronto (sem build na Square).
-# Docs:
-# - https://help.squarecloud.app/pt-br/article/workflow-github-actions-deploy-automatico-o6c7e2/
-# - https://docs.squarecloud.app/pt-br/tutorials/website/nextjs (padrão commit --file)
+# Prefer build no GitHub; Square ainda roda `npm run build` se o zip/repo vier sem dist.
+# Docs: https://help.squarecloud.app/pt-br/article/workflow-github-actions-deploy-automatico-o6c7e2/
 
 on:
   push:
@@ -35,13 +33,18 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Ensure dist exists
+        run: test -f dist/index.js
+
       - name: Pack release zip
         run: |
           zip -r project.zip \
             package.json \
             package-lock.json \
             squarecloud.app \
+            tsconfig.json \
             dist \
+            src \
             prisma \
             -x "prisma/*.db" "prisma/*.db-journal"
 
