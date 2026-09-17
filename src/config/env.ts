@@ -25,18 +25,6 @@ const envSchema = z.object({
   ADMIN_JWT_EXPIRES_IN: z.string().default("2h"),
   ADMIN_CORS_ORIGIN: z.string().default("http://localhost:3001"),
   ADMIN_FRONTEND_URL: z.string().default("http://localhost:3001"),
-  /** Comma-separated IPs. Empty = allow all (dev only). Required in production. */
-  ADMIN_IP_ALLOWLIST: z
-    .string()
-    .optional()
-    .transform((v) =>
-      v
-        ? v
-            .split(",")
-            .map((ip) => ip.trim())
-            .filter(Boolean)
-        : [],
-    ),
   /**
    * Express trust proxy hops. Default 1 (e.g. Square Cloud / one reverse proxy).
    * Set 0 only when the API is exposed without a proxy (local direct).
@@ -71,6 +59,8 @@ const envSchema = z.object({
   CHECKOUT_RESERVE_SECONDS: z.coerce.number().int().positive().default(900),
   JOB_SECRET: z.string().optional(),
   JOB_POLL_MS: z.coerce.number().int().min(0).default(60_000),
+  /** Public home sections payload cache (Redis + memory). */
+  HOME_SECTIONS_CACHE_TTL_SEC: z.coerce.number().int().min(0).max(600).default(45),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   DISCORD_CLIENT_ID: z.string().optional(),
@@ -94,6 +84,21 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+
+  /** Media GC — orphan cleanup (conservative). Off by default in poller. */
+  MEDIA_GC_ENABLED: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
+  MEDIA_GC_PURGE_ENABLED: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
+  /** Run GC at most every N poller ticks (JOB_POLL_MS). Default 60 ≈ 1h if poll=60s. */
+  MEDIA_GC_EVERY_TICKS: z.coerce.number().int().positive().default(60),
+  MEDIA_GC_ORPHAN_AGE_HOURS: z.coerce.number().int().positive().default(48),
+  MEDIA_GC_PURGE_AFTER_DAYS: z.coerce.number().int().positive().default(7),
+  MEDIA_GC_INCOMPLETE_AGE_HOURS: z.coerce.number().int().positive().default(1),
 
   /** Web Push (optional). Generate: npx web-push generate-vapid-keys */
   VAPID_PUBLIC_KEY: z.string().optional(),
@@ -156,13 +161,6 @@ if (
 ) {
   console.error(
     "ADMIN_JWT_SECRET must be a distinct secret (>=32 chars), not equal to JWT_SECRET.",
-  );
-  process.exit(1);
-}
-
-if (data.NODE_ENV === "production" && data.ADMIN_IP_ALLOWLIST.length === 0) {
-  console.error(
-    "ADMIN_IP_ALLOWLIST is required in production (comma-separated IPs of offices/VPN). Refusing to start with an open admin panel.",
   );
   process.exit(1);
 }

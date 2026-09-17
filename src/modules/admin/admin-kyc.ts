@@ -16,11 +16,11 @@ async function resolveDocUrl(
 ): Promise<string | null> {
   const asset = await tx.mediaAsset.findFirst({
     where: { id: assetId, deletedAt: null },
-    select: { id: true, url: true, visibility: true },
+    select: { id: true, code: true, url: true, visibility: true },
   });
   if (!asset) return null;
   if (asset.visibility === "PUBLIC") return asset.url;
-  return issueSignedUrl(asset.id).url;
+  return issueSignedUrl({ id: asset.id, code: asset.code }).url;
 }
 
 export async function serializeAdminKycSubmission(

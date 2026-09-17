@@ -13,7 +13,7 @@ export function createApp() {
 
   app.disable("x-powered-by");
   // Behind reverse proxy (Square Cloud, nginx, Cloudflare). Hops from TRUST_PROXY.
-  // Wrong value breaks rate-limit / IP allowlist (clients can spoof X-Forwarded-For).
+  // Wrong value breaks rate-limit (clients can spoof X-Forwarded-For).
   app.set("trust proxy", env.TRUST_PROXY);
 
   app.use(

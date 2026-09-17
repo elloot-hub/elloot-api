@@ -12,7 +12,6 @@ import { safePasswordCompare } from "../../lib/safe-password";
 import { decryptTotpSecret, verifyTotpCode } from "../../lib/totp";
 import {
   adminSessionUserFrom,
-  enforceAdminIpAllowlist,
   requireAdminAuth,
   signAdminAccessToken,
   verifyAdminAccessToken,
@@ -57,7 +56,6 @@ function invalidCredentials(): never {
 
 adminAuthRouter.post(
   "/login",
-  enforceAdminIpAllowlist,
   adminAuthStrictLimiter,
   adminAuthAccountLimiter,
   asyncHandler(async (req, res) => {
@@ -124,7 +122,6 @@ adminAuthRouter.post(
 
 adminAuthRouter.post(
   "/verify-2fa",
-  enforceAdminIpAllowlist,
   adminAuthStrictLimiter,
   adminAuthAccountLimiter,
   asyncHandler(async (req, res) => {

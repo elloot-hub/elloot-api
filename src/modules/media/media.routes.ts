@@ -18,6 +18,7 @@ import {
 import {
   confirmPresignedUpload,
   createPresignSession,
+  findMediaByRef,
   getMediaMeta,
   getObjectBuffer,
   issueSignedUrl,
@@ -164,7 +165,7 @@ mediaRouter.get(
       res.json({ url: asset.url, expiresAt: null });
       return;
     }
-    res.json(issueSignedUrl(asset.id));
+    res.json(issueSignedUrl({ id: asset.id, code: asset.code }));
   }),
 );
 
@@ -172,7 +173,7 @@ mediaRouter.get(
   "/:id/content",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const id = routeParam(req.params.id);
+    const id = decodeURIComponent(routeParam(req.params.id));
     const actor = req.user
       ? { id: req.user.id, role: req.user.role }
       : null;
@@ -180,9 +181,7 @@ mediaRouter.get(
     const asset = await withRlsTransaction(
       { actor, asService: true },
       async (tx) => {
-        const row = await tx.mediaAsset.findFirst({
-          where: { id, deletedAt: null },
-        });
+        const row = await findMediaByRef(tx, id, { deletedAt: null });
         if (!row) {
           throw new AppError(404, "Media not found", "MEDIA_NOT_FOUND");
         }
@@ -212,7 +211,17 @@ mediaRouter.get(
         : "private, no-store",
     );
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Content-Disposition", "inline");
+    res.setHeader(
+      "Content-Disposition",
+      asset.visibility === "PRIVATE"
+        ? `inline; filename="${asset.code}.bin"`
+        : `inline; filename="${asset.code}.${asset.mimeType.includes("png") ? "png" : asset.mimeType.includes("webp") ? "webp" : "jpg"}"`,
+    );
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'none'; sandbox; style-src 'none'; script-src 'none'; form-action 'none'",
+    );
+    res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
     res.send(body);
   }),

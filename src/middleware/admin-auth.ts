@@ -139,30 +139,6 @@ export async function authenticateAdminAccessToken(token: string): Promise<{
   return { user, jti: jwtUser.jti, exp: jwtUser.exp };
 }
 
-function clientIp(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.length > 0) {
-    return forwarded.split(",")[0]?.trim() ?? req.ip ?? "";
-  }
-  return req.ip ?? "";
-}
-
-export function enforceAdminIpAllowlist(
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-) {
-  const allowlist = env.ADMIN_IP_ALLOWLIST;
-  if (!allowlist.length) {
-    return next();
-  }
-  const ip = clientIp(req);
-  if (!allowlist.includes(ip)) {
-    return next(new AppError(403, "Admin access denied from this IP", "FORBIDDEN"));
-  }
-  next();
-}
-
 export function requireAdminAuth(
   req: Request,
   _res: Response,

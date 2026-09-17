@@ -52,7 +52,12 @@ export function assertAllowedAvatarUrl(url: string | null): string | null {
   if (origins.has(parsed.origin)) {
     // Prefer API media content paths when hosted on APP_URL.
     if (originOf(env.APP_URL) === parsed.origin) {
-      if (!/^\/api\/media\/[^/]+\/content\/?$/i.test(parsed.pathname)) {
+      // Accept MED-YYMM-XXXXXX (preferred) or legacy cuid in the path.
+      if (
+        !/^\/api\/media\/(MED-\d{4}-[A-Z0-9]{6}|[a-z0-9]{20,})\/content\/?$/i.test(
+          parsed.pathname,
+        )
+      ) {
         throw new AppError(
           400,
           "Use um arquivo de mídia da plataforma como avatar.",

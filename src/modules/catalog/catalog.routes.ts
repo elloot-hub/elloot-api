@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { withVisibilityBadges } from "../visibility/visibility.badges";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Category, Prisma } from "@prisma/client";
@@ -408,7 +409,7 @@ catalogRouter.get(
                 ]
               : [{ createdAt: "desc" }, { id: "desc" }];
 
-    const listings = await withRlsTransaction({ actor: null }, async (tx) => {
+    const payload = await withRlsTransaction({ actor: null }, async (tx) => {
       let categoryFilter: Prisma.CategoryWhereInput | undefined;
       if (category) {
         const match = await tx.category.findFirst({
@@ -424,9 +425,8 @@ catalogRouter.get(
           select: { id: true, slugPath: true },
         });
         if (!match) {
-          return [];
+          return { listings: [] as Array<Record<string, unknown>>, nextCursor: null as string | null };
         }
-        // Include the category itself and all descendants
         categoryFilter = {
           OR: [
             { id: match.id },
@@ -435,7 +435,7 @@ catalogRouter.get(
         };
       }
 
-      return tx.listing.findMany({
+      const listings = await tx.listing.findMany({
         where: {
           status: "ACTIVE",
           ...(seller ? { sellerId: seller } : {}),
@@ -499,18 +499,22 @@ catalogRouter.get(
           },
         },
       });
+
+      const withBadges = await withVisibilityBadges(tx, listings);
+      const nextCursor =
+        listings.length === take ? listings[listings.length - 1]?.id ?? null : null;
+
+      return {
+        listings: withBadges.map(({ _count, visibilityBadges, ...listing }) => ({
+          ...listing,
+          mediaCount: _count.media,
+          visibilityBadges,
+        })),
+        nextCursor,
+      };
     });
 
-    const nextCursor =
-      listings.length === take ? listings[listings.length - 1]?.id : null;
-
-    res.json({
-      listings: listings.map(({ _count, ...listing }) => ({
-        ...listing,
-        mediaCount: _count.media,
-      })),
-      nextCursor,
-    });
+    res.json(payload);
   }),
 );
 

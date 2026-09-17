@@ -3,6 +3,10 @@ import type { MediaPurpose, MediaVisibility, Prisma } from "@prisma/client";
 import { env } from "../../config/env";
 import { AppError } from "../../lib/errors";
 import {
+  generateMediaCode,
+  isMediaCode,
+} from "../../lib/public-codes";
+import {
   processImageUpload,
   sanitizeOriginalName,
 } from "./media.image";
@@ -36,8 +40,41 @@ function buildObjectKey(input: {
   return `media/${input.purpose.toLowerCase()}/${input.ownerId}/${yyyy}/${mm}/${id}.${input.extension}`;
 }
 
+async function allocateMediaCode(tx: Prisma.TransactionClient) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const code = generateMediaCode();
+    const exists = await tx.mediaAsset.findUnique({
+      where: { code },
+      select: { id: true },
+    });
+    if (!exists) return code;
+  }
+  throw new AppError(500, "Could not allocate media code", "MEDIA_CODE_ALLOC");
+}
+
+/** Resolve by public MED- code (preferred) or legacy cuid. */
+export async function findMediaByRef(
+  tx: Prisma.TransactionClient,
+  ref: string,
+  extra?: { deletedAt?: null },
+) {
+  const whereDeleted = extra?.deletedAt === null ? { deletedAt: null } : {};
+  if (isMediaCode(ref)) {
+    return tx.mediaAsset.findFirst({
+      where: { code: ref, ...whereDeleted },
+    });
+  }
+  return tx.mediaAsset.findFirst({
+    where: {
+      OR: [{ id: ref }, { code: ref }],
+      ...whereDeleted,
+    },
+  });
+}
+
 function serializeAsset(asset: {
   id: string;
+  code: string;
   key: string;
   url: string;
   mimeType: string;
@@ -51,6 +88,7 @@ function serializeAsset(asset: {
 }) {
   return {
     id: asset.id,
+    code: asset.code,
     url: asset.url,
     mimeType: asset.mimeType,
     sizeBytes: asset.sizeBytes,
@@ -112,14 +150,14 @@ export async function uploadImage(
     mimeType: processed.mimeType,
   });
 
-  // Temporary url; rewritten with id after create
-  const placeholderUrl = "pending";
+  const code = await allocateMediaCode(tx);
 
   const created = await tx.mediaAsset.create({
     data: {
       ownerId: actor.id,
+      code,
       key,
-      url: placeholderUrl,
+      url: "pending",
       mimeType: processed.mimeType,
       sizeBytes: processed.buffer.byteLength,
       width: processed.width,
@@ -131,7 +169,7 @@ export async function uploadImage(
     },
   });
 
-  const url = publicUrlForAsset({ id: created.id, key: created.key });
+  const url = publicUrlForAsset({ code: created.code, key: created.key });
   const asset = await tx.mediaAsset.update({
     where: { id: created.id },
     data: { url },
@@ -182,9 +220,12 @@ export async function createPresignSession(
     purpose: input.purpose,
   });
 
+  const code = await allocateMediaCode(tx);
+
   const created = await tx.mediaAsset.create({
     data: {
       ownerId: actor.id,
+      code,
       key,
       url: "pending",
       mimeType: input.mimeType,
@@ -201,7 +242,10 @@ export async function createPresignSession(
   });
 
   return {
-    asset: serializeAsset({ ...created, url: publicUrlForAsset(created) }),
+    asset: serializeAsset({
+      ...created,
+      url: publicUrlForAsset({ code: created.code, key: created.key }),
+    }),
     upload: {
       method: "PUT" as const,
       url: uploadUrl,
@@ -218,9 +262,7 @@ export async function confirmPresignedUpload(
   actor: MediaActor,
   assetId: string,
 ) {
-  const asset = await tx.mediaAsset.findFirst({
-    where: { id: assetId, deletedAt: null },
-  });
+  const asset = await findMediaByRef(tx, assetId, { deletedAt: null });
   if (!asset) {
     throw new AppError(404, "Media not found", "MEDIA_NOT_FOUND");
   }
@@ -268,7 +310,7 @@ export async function confirmPresignedUpload(
     overwrite: true,
   });
 
-  const url = publicUrlForAsset({ id: asset.id, key: finalKey });
+  const url = publicUrlForAsset({ code: asset.code, key: finalKey });
   const updated = await tx.mediaAsset.update({
     where: { id: asset.id },
     data: {
@@ -300,11 +342,9 @@ export async function listMyMedia(
 export async function getMediaMeta(
   tx: Prisma.TransactionClient,
   actor: MediaActor | null,
-  assetId: string,
+  assetRef: string,
 ) {
-  const asset = await tx.mediaAsset.findFirst({
-    where: { id: assetId, deletedAt: null },
-  });
+  const asset = await findMediaByRef(tx, assetRef, { deletedAt: null });
   if (!asset) {
     throw new AppError(404, "Media not found", "MEDIA_NOT_FOUND");
   }
@@ -321,11 +361,9 @@ export async function getMediaMeta(
 export async function softDeleteMedia(
   tx: Prisma.TransactionClient,
   actor: MediaActor,
-  assetId: string,
+  assetRef: string,
 ) {
-  const asset = await tx.mediaAsset.findFirst({
-    where: { id: assetId, deletedAt: null },
-  });
+  const asset = await findMediaByRef(tx, assetRef, { deletedAt: null });
   if (!asset) {
     throw new AppError(404, "Media not found", "MEDIA_NOT_FOUND");
   }
@@ -345,6 +383,7 @@ export async function softDeleteMedia(
 export async function resolveContentAccess(input: {
   asset: {
     id: string;
+    code: string;
     ownerId: string | null;
     visibility: MediaVisibility;
     deletedAt: Date | null;
@@ -371,12 +410,19 @@ export async function resolveContentAccess(input: {
     input.query.exp &&
     input.query.nonce &&
     input.query.sig &&
-    verifyContentAccess({
-      assetId: input.asset.id,
+    (verifyContentAccess({
+      publicRef: input.asset.code,
       exp: input.query.exp,
       nonce: input.query.nonce,
       sig: input.query.sig,
-    })
+    }) ||
+      // Legacy signatures that used cuid before MED- codes.
+      verifyContentAccess({
+        publicRef: input.asset.id,
+        exp: input.query.exp,
+        nonce: input.query.nonce,
+        sig: input.query.sig,
+      }))
   ) {
     return true;
   }
@@ -384,8 +430,8 @@ export async function resolveContentAccess(input: {
   throw new AppError(403, "Forbidden", "FORBIDDEN");
 }
 
-export function issueSignedUrl(assetId: string) {
-  return signContentAccess(assetId);
+export function issueSignedUrl(asset: { id: string; code: string }) {
+  return signContentAccess(asset.code);
 }
 
 export { publicUrlForAsset, getObjectBuffer };

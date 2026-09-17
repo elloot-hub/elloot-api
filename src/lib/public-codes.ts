@@ -6,6 +6,7 @@ export const PUBLIC_CODE_PREFIX = {
   LST: "LST",
   DSP: "DSP",
   PAY: "PAY",
+  MED: "MED",
 } as const;
 
 export type PublicCodeKind = keyof typeof PUBLIC_CODE_PREFIX;
@@ -77,4 +78,12 @@ export function isPayoutCode(ref: string): boolean {
 
 export function generatePayoutCode(date = new Date()): string {
   return generatePublicCode("PAY", date);
+}
+
+export function isMediaCode(ref: string): boolean {
+  return isPublicCode("MED", ref);
+}
+
+export function generateMediaCode(date = new Date()): string {
+  return generatePublicCode("MED", date);
 }

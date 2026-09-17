@@ -153,6 +153,8 @@ model Category {
   parent                 Category?      @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
   children               Category[]     @relation("CategoryTree")
   listings               Listing[]
+  visibilityProducts     VisibilityProduct[]
+  homeSections           HomeSection[]
 
   @@index([parentId, status])
   @@index([status, showInMenu])
@@ -164,6 +166,8 @@ model Category {
 /// Uploaded binary tracked by the media CDN layer.
 model MediaAsset {
   id             String          @id @default(cuid())
+  /// Public opaque ref for URLs (MED-YYMM-XXXXXX). Never expose cuid in public URLs.
+  code           String          @unique
   ownerId        String?
   /// Storage object key (never trust client paths)
   key            String          @unique
@@ -220,6 +224,7 @@ model Listing {
   offers               ListingOffer[]
   questions            ListingQuestion[]
   deliveryStockItems   DeliveryStockItem[]
+  placements           ListingPlacement[]
   category             Category                 @relation(fields: [categoryId], references: [id])
   seller               User                     @relation("SellerListings", fields: [sellerId], references: [id])
   orders               Order[]
@@ -741,4 +746,115 @@ enum ListingModel {
 enum DeliveryMode {
   MANUAL
   AUTO
+}
+
+enum VisibilityScope {
+  GLOBAL
+  CATEGORY
+}
+
+enum HomeSectionSource {
+  PLACEMENT
+  CATEGORY
+  METRIC
+  MANUAL
+}
+
+enum HomeSectionLayout {
+  GRID
+  CAROUSEL
+}
+
+enum HomeSectionMetric {
+  RECENT
+  BEST_SELLING
+  MOST_FAVORITED
+  MOST_VIEWED
+}
+
+enum ListingPlacementStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+/// Paid or promotional visibility product (configured in admin).
+model VisibilityProduct {
+  id             String          @id @default(cuid())
+  /// Stable slug for linking home sections (e.g. premium-home).
+  code           String          @unique
+  name           String
+  description    String?
+  priceCents     Int
+  durationHours  Int
+  scope          VisibilityScope @default(GLOBAL)
+  categoryId     String?
+  /// Null = unlimited concurrent active placements for this product.
+  maxActiveSlots Int?
+  /// When slots are full: enqueue (PENDING) instead of rejecting purchase.
+  queueEnabled    Boolean         @default(true)
+  /// Higher = preferred in section ranking.
+  priority       Int             @default(0)
+  badgeLabel     String?
+  active         Boolean         @default(true)
+  sortOrder      Int             @default(0)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  placements     ListingPlacement[]
+
+  @@index([active, sortOrder])
+  @@index([categoryId])
+  @@map("visibility_products")
+}
+
+/// Configurable homepage row (GGMAX / Trustmarket style).
+model HomeSection {
+  id                String             @id @default(cuid())
+  title             String
+  subtitle          String?
+  source            HomeSectionSource
+  layout            HomeSectionLayout  @default(GRID)
+  /// VisibilityProduct ids when source = PLACEMENT.
+  productIds        String[]           @default([])
+  categoryId        String?
+  metric            HomeSectionMetric?
+  /// Listing ids when source = MANUAL.
+  manualListingIds  String[]           @default([])
+  itemLimit         Int                @default(10)
+  columns           Int                @default(5)
+  viewMoreHref      String?
+  viewMoreLabel     String?
+  sortOrder         Int                @default(0)
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  category          Category?          @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([active, sortOrder])
+  @@index([categoryId])
+  @@map("home_sections")
+}
+
+/// Active/historical visibility purchase on a listing (checkout in later phase).
+model ListingPlacement {
+  id        String                 @id @default(cuid())
+  listingId String
+  productId String
+  status    ListingPlacementStatus @default(PENDING)
+  /// Amount charged at purchase (wallet / future PIX).
+  paidCents Int                    @default(0)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime               @default(now())
+  updatedAt DateTime               @updatedAt
+  listing   Listing                @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  product   VisibilityProduct      @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([listingId, status])
+  @@index([productId, status])
+  @@index([status, endsAt])
+  @@index([status, createdAt])
+  @@map("listing_placements")
 }

@@ -180,31 +180,31 @@ export async function createPresignedUpload(input: {
   return { uploadUrl, headers: { "Content-Type": input.mimeType } };
 }
 
-export function publicUrlForAsset(asset: { id: string; key: string }) {
+export function publicUrlForAsset(asset: { code: string; key: string }) {
   const base = env.MEDIA_PUBLIC_BASE_URL?.replace(/\/$/, "");
   if (base) return `${base}/${asset.key}`;
-  return `${env.APP_URL.replace(/\/$/, "")}/api/media/${asset.id}/content`;
+  return `${env.APP_URL.replace(/\/$/, "")}/api/media/${asset.code}/content`;
 }
 
-/** HMAC signed URL for PRIVATE assets served by the API */
+/** HMAC signed URL for PRIVATE assets served by the API (uses public code). */
 export function signContentAccess(
-  assetId: string,
+  publicRef: string,
   ttlSeconds = env.MEDIA_SIGN_TTL_SECONDS,
 ) {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const nonce = randomBytes(8).toString("hex");
-  const payload = `${assetId}.${exp}.${nonce}`;
+  const payload = `${publicRef}.${exp}.${nonce}`;
   const sig = createHmac("sha256", env.mediaSigningSecret)
     .update(payload)
     .digest("hex");
   return {
-    url: `${env.APP_URL.replace(/\/$/, "")}/api/media/${assetId}/content?exp=${exp}&nonce=${nonce}&sig=${sig}`,
+    url: `${env.APP_URL.replace(/\/$/, "")}/api/media/${encodeURIComponent(publicRef)}/content?exp=${exp}&nonce=${nonce}&sig=${sig}`,
     expiresAt: new Date(exp * 1000).toISOString(),
   };
 }
 
 export function verifyContentAccess(input: {
-  assetId: string;
+  publicRef: string;
   exp: string;
   nonce: string;
   sig: string;
@@ -216,7 +216,7 @@ export function verifyContentAccess(input: {
   if (!/^[a-f0-9]{16}$/i.test(input.nonce) || !/^[a-f0-9]{64}$/i.test(input.sig)) {
     return false;
   }
-  const payload = `${input.assetId}.${input.exp}.${input.nonce}`;
+  const payload = `${input.publicRef}.${input.exp}.${input.nonce}`;
   const expected = createHmac("sha256", env.mediaSigningSecret)
     .update(payload)
     .digest("hex");

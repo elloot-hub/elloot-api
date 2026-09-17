@@ -6,6 +6,7 @@ import { catalogRouter } from "../modules/catalog/catalog.routes";
 import { conversationsRouter } from "../modules/conversations/conversations.routes";
 import { disputesRouter } from "../modules/disputes/disputes.routes";
 import { healthRouter } from "../modules/health/health.routes";
+import { homeRouter } from "../modules/home/home.routes";
 import { jobsRouter } from "../modules/jobs/jobs.routes";
 import { listingsRouter } from "../modules/listings/listings.routes";
 import { mediaRouter } from "../modules/media/media.routes";
@@ -20,6 +21,7 @@ import { favoritesRouter } from "../modules/favorites/favorites.routes";
 import { dashboardRouter } from "../modules/dashboard/dashboard.routes";
 import { profilesRouter } from "../modules/profiles/profiles.routes";
 import { kycRouter } from "../modules/kyc/kyc.routes";
+import { visibilityRouter } from "../modules/visibility/visibility.routes";
 
 export const apiRouter = Router();
 
@@ -27,6 +29,8 @@ apiRouter.use("/health", healthRouter);
 apiRouter.use("/auth", authRouter);
 apiRouter.use("/auth/2fa", twoFactorRouter);
 apiRouter.use("/catalog", catalogRouter);
+apiRouter.use("/home", homeRouter);
+apiRouter.use("/visibility", visibilityRouter);
 apiRouter.use("/media", mediaRouter);
 apiRouter.use("/listings", listingsRouter);
 apiRouter.use("/admin", adminRouter);
