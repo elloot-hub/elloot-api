@@ -94,6 +94,7 @@ jobs:
         run: npx tsx scripts/ensure-public-schema.ts
 
       - name: Prisma db push
+        continue-on-error: true
         env:
           NODE_ENV: development
           DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
@@ -101,6 +102,21 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
           ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
         run: npx tsx scripts/with-db-env.ts npx prisma db push
+
+      - name: Apply visibility/media SQL (idempotent)
+        env:
+          NODE_ENV: development
+          DATABASE_SSL_CERT_PATH: ./src/databases/postgres/certificates/certificate.pem
+          DATABASE_SSL_P12_PASSWORD: ${{ secrets.DATABASE_SSL_P12_PASSWORD || 'elloot' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-placeholder-jwt-secret-at-least-32-chars' }}
+          ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET || 'ci-placeholder-admin-jwt-secret-32ch' }}
+        run: |
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/029_media_public_codes.sql --schema prisma/schema.prisma
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/032_create_visibility_tables.sql --schema prisma/schema.prisma
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/030_visibility_home_sections.sql --schema prisma/schema.prisma
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/031_home_sections_public_read.sql --schema prisma/schema.prisma
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/033_listing_placements_seller_read.sql --schema prisma/schema.prisma
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/034_visibility_queue_paid.sql --schema prisma/schema.prisma
 
       - name: Apply RLS (db:secure)
         env:
