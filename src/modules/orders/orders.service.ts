@@ -120,7 +120,7 @@ export async function createOrderFromListing(input: {
       amountCents = listing.priceCents;
     }
 
-    const feeCents = calcFeeCents(amountCents);
+    const feeCents = calcFeeCents(amountCents, listing.feeBps);
     const expiresAt = new Date(Date.now() + env.CHECKOUT_RESERVE_SECONDS * 1000);
 
     const order = await createWithPublicCode({

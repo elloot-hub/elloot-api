@@ -16,6 +16,7 @@ import { adminHomeSectionsRouter } from "./admin-home-sections.routes";
 import { adminMetricsRouter } from "./admin-metrics.routes";
 import { adminReviewsRouter } from "./admin-reviews.routes";
 import { adminProductTypesRouter } from "./admin-product-types.routes";
+import { adminReachPlansRouter } from "./admin-reach-plans.routes";
 
 export const adminRouter = Router();
 
@@ -25,6 +26,7 @@ adminRouter.use("/stats", adminStatsRouter);
 adminRouter.use("/metrics", adminMetricsRouter);
 adminRouter.use("/reviews", adminReviewsRouter);
 adminRouter.use("/product-types", adminProductTypesRouter);
+adminRouter.use("/reach-plans", adminReachPlansRouter);
 adminRouter.use("/listings", listingsAdminRouter);
 adminRouter.use("/disputes", adminDisputesRouter);
 adminRouter.use("/users", adminUsersRouter);

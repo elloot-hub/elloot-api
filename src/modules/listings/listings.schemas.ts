@@ -40,6 +40,7 @@ export const createListingSchema = z
     mediaUrls: z.array(z.url()).max(8).optional().default([]),
     publish: z.boolean().optional().default(false),
     offers: z.array(listingOfferSchema).min(2).max(30).optional(),
+    reachPlanId: z.string().min(1).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.listingModel === "DYNAMIC") {
@@ -93,6 +94,7 @@ export const updateListingSchema = z
     mediaAssetIds: z.array(z.string().min(1)).max(8).optional(),
     mediaUrls: z.array(z.url()).max(8).optional(),
     offers: z.array(updateListingOfferSchema).min(2).max(30).optional(),
+    reachPlanId: z.string().min(1).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: "Provide at least one field to update",

@@ -13,6 +13,7 @@ import {
   countAvailableStock,
 } from "./delivery-stock.service";
 import { listingPublicSelect } from "./listings.shared";
+import { resolveReachPlanForListing } from "../catalog/reach-plans";
 
 type Tx = Prisma.TransactionClient;
 type UpdateBody = z.infer<typeof updateListingSchema>;
@@ -28,6 +29,7 @@ export type RevisionPayload = {
   stockQuantity?: number;
   mediaAssetIds?: string[];
   mediaUrls?: string[];
+  reachPlanId?: string;
   offers?: Array<{
     id?: string;
     title: string;
@@ -230,6 +232,10 @@ export function splitListingUpdate(
   if (body.stockQuantity !== undefined) {
     immediate.stockQuantity = body.stockQuantity;
     changedFields.push("stockQuantity");
+  }
+  if (body.reachPlanId !== undefined) {
+    immediate.reachPlanId = body.reachPlanId;
+    changedFields.push("reachPlanId");
   }
 
   const mediaSplit = splitMediaUpdate(body, existingMediaUrls);
@@ -440,6 +446,20 @@ export async function applyListingUpdateTx(
       ? await countAvailableStock(tx, { listingId: listing.id })
       : body.stockQuantity;
 
+  let reachFields: {
+    reachPlanId: string;
+    feeBps: number;
+    reachPriority: number;
+  } | null = null;
+  if (body.reachPlanId !== undefined) {
+    const plan = await resolveReachPlanForListing(tx, body.reachPlanId);
+    reachFields = {
+      reachPlanId: plan.id,
+      feeBps: plan.feeBps,
+      reachPriority: plan.priority,
+    };
+  }
+
   return tx.listing.update({
     where: { id: listing.id },
     data: {
@@ -452,6 +472,7 @@ export async function applyListingUpdateTx(
       priceCents: body.priceCents ?? offerDerived?.priceCents,
       stockQuantity: listingStockQty,
       deliveryMode: body.deliveryMode ?? offerDerived?.deliveryMode,
+      ...(reachFields ?? {}),
     },
     select: listingPublicSelect,
   });

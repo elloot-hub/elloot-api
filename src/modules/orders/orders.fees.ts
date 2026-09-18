@@ -1,5 +1,10 @@
 import { env } from "../../config/env";
 
-export function calcFeeCents(amountCents: number) {
-  return Math.round((amountCents * env.PLATFORM_FEE_BPS) / 10_000);
+/** `feeBps` override from listing reach plan; falls back to PLATFORM_FEE_BPS. */
+export function calcFeeCents(amountCents: number, feeBps?: number | null) {
+  const bps =
+    feeBps != null && Number.isFinite(feeBps) && feeBps >= 0
+      ? feeBps
+      : env.PLATFORM_FEE_BPS;
+  return Math.round((amountCents * bps) / 10_000);
 }

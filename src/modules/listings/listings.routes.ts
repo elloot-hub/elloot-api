@@ -37,6 +37,7 @@ import {
   aggregateSellerReviews,
   emptySellerReviewAgg,
 } from "./listings.shared";
+import { resolveReachPlanForListing } from "../catalog/reach-plans";
 import {
   listingEventBodySchema,
   recordListingEvent,
@@ -197,6 +198,10 @@ listingsRouter.post(
         mediaUrls: body.mediaUrls,
       });
 
+      const reachPlan = body.reachPlanId
+        ? await resolveReachPlanForListing(tx, body.reachPlanId)
+        : null;
+
       const listing = await createWithPublicCode({
         kind: "LST",
         create: (code) =>
@@ -211,6 +216,9 @@ listingsRouter.post(
               stockQuantity: body.stockQuantity ?? 1,
               productType: body.productType ?? null,
               listingModel,
+              reachPlanId: reachPlan?.id ?? null,
+              feeBps: reachPlan?.feeBps ?? null,
+              reachPriority: reachPlan?.priority ?? 0,
               deliveryMode:
                 listingModel === "DYNAMIC"
                   ? offers.some((o) => o.deliveryMode === "AUTO")
@@ -587,13 +595,31 @@ listingsRouter.patch(
 
         if (
           scalarImmediate.priceCents !== undefined ||
-          scalarImmediate.stockQuantity !== undefined
+          scalarImmediate.stockQuantity !== undefined ||
+          scalarImmediate.reachPlanId !== undefined
         ) {
+          let reachData: {
+            reachPlanId: string;
+            feeBps: number;
+            reachPriority: number;
+          } | null = null;
+          if (scalarImmediate.reachPlanId !== undefined) {
+            const plan = await resolveReachPlanForListing(
+              tx,
+              scalarImmediate.reachPlanId,
+            );
+            reachData = {
+              reachPlanId: plan.id,
+              feeBps: plan.feeBps,
+              reachPriority: plan.priority,
+            };
+          }
           updated = await tx.listing.update({
             where: { id: listing.id },
             data: {
               priceCents: scalarImmediate.priceCents,
               stockQuantity: scalarImmediate.stockQuantity,
+              ...(reachData ?? {}),
             },
             select: listingPublicSelect,
           });
@@ -602,6 +628,9 @@ listingsRouter.patch(
           }
           if (scalarImmediate.stockQuantity !== undefined) {
             appliedImmediately.push("stockQuantity");
+          }
+          if (scalarImmediate.reachPlanId !== undefined) {
+            appliedImmediately.push("reachPlanId");
           }
         }
 

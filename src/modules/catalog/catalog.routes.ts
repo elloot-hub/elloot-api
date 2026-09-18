@@ -4,6 +4,7 @@ import type { Category, Prisma } from "@prisma/client";
 import { withRlsTransaction } from "../../databases";
 import { asyncHandler } from "../../lib/async-handler";
 import { resolveProductTypesForCategory } from "./product-types";
+import { listActiveReachPlans } from "./reach-plans";
 
 export const catalogRouter = Router();
 
@@ -293,6 +294,17 @@ catalogRouter.get(
   }),
 );
 
+/** Active reach tiers for the sell form (fee % per sale). */
+catalogRouter.get(
+  "/reach-plans",
+  asyncHandler(async (_req, res) => {
+    const items = await withRlsTransaction({ actor: null }, async (tx) =>
+      listActiveReachPlans(tx),
+    );
+    res.json({ success: true, items });
+  }),
+);
+
 /** Flat list of mid-level categories (children of roots), or children of a given parent. */
 catalogRouter.get(
   "/categories/flat",
@@ -387,7 +399,7 @@ catalogRouter.get(
                   { salesCount: "desc" },
                   { id: "desc" },
                 ]
-              : [{ createdAt: "desc" }, { id: "desc" }];
+              : [{ reachPriority: "desc" }, { createdAt: "desc" }, { id: "desc" }];
 
     const payload = await withRlsTransaction({ actor: null }, async (tx) => {
       let categoryFilter: Prisma.CategoryWhereInput | undefined;

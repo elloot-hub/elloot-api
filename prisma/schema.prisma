@@ -253,6 +253,12 @@ model Listing {
   /// Admin rejection reason (visible to seller).
   moderationNote       String?
   submittedForReviewAt DateTime?
+  /// Reach plan chosen at publish (fee % per sale).
+  reachPlanId          String?
+  /// Snapshot of plan fee in basis points (600 = 6%). Used at checkout.
+  feeBps               Int?
+  /// Snapshot of plan priority for catalog ranking.
+  reachPriority        Int                      @default(0)
   favorites            Favorite[]
   events               ListingEvent[]
   media                ListingMedia[]
@@ -263,11 +269,14 @@ model Listing {
   placements           ListingPlacement[]
   category             Category                 @relation(fields: [categoryId], references: [id])
   seller               User                     @relation("SellerListings", fields: [sellerId], references: [id])
+  reachPlan            ReachPlan?               @relation(fields: [reachPlanId], references: [id], onDelete: SetNull)
   orders               Order[]
   reviews              Review[]
 
   @@index([status, categoryId])
   @@index([sellerId])
+  @@index([status, reachPriority, createdAt])
+  @@index([reachPlanId])
   @@map("listings")
 }
 
@@ -816,6 +825,30 @@ enum ListingPlacementStatus {
   ACTIVE
   EXPIRED
   CANCELLED
+}
+
+/// Seller-selectable reach tier: higher fee % = higher catalog priority.
+model ReachPlan {
+  id          String    @id @default(cuid())
+  /// Stable slug (e.g. MIN, MID, MAX).
+  code        String    @unique
+  title       String
+  description String?
+  /// Platform fee in basis points (600 = 6%).
+  feeBps      Int
+  /// Higher = preferred in category/search ranking.
+  priority    Int       @default(0)
+  /// UI signal bars 1–4.
+  barLevel    Int       @default(1)
+  recommended Boolean   @default(false)
+  active      Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  listings    Listing[]
+
+  @@index([active, sortOrder])
+  @@map("reach_plans")
 }
 
 /// Paid or promotional visibility product (configured in admin).

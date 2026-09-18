@@ -107,6 +107,7 @@ export type LockedListing = {
   listingModel: string;
   status: string;
   deliveryMode: string;
+  feeBps: number | null;
 };
 
 export async function lockListingForUpdate(
@@ -124,7 +125,8 @@ export async function lockListingForUpdate(
       "stockQuantity",
       "listingModel"::text AS "listingModel",
       status::text AS status,
-      "deliveryMode"::text AS "deliveryMode"
+      "deliveryMode"::text AS "deliveryMode",
+      "feeBps"
     FROM listings
     WHERE id = ${listingId}
     FOR UPDATE

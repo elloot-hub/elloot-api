@@ -27,8 +27,21 @@ export const listingPublicSelect = {
   listingModel: true,
   deliveryMode: true,
   status: true,
+  reachPlanId: true,
+  feeBps: true,
+  reachPriority: true,
   createdAt: true,
   updatedAt: true,
+  reachPlan: {
+    select: {
+      id: true,
+      code: true,
+      title: true,
+      feeBps: true,
+      priority: true,
+      barLevel: true,
+    },
+  },
   category: {
     select: {
       id: true,
