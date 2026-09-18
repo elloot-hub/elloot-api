@@ -69,11 +69,11 @@ export async function getPublicProfile(tx: Tx, idOrUsername: string) {
       select: listingPublicSelect,
     }),
     tx.review.findMany({
-      where: { sellerId },
+      where: { sellerId, hidden: false },
       select: { rating: true },
     }),
     tx.review.findMany({
-      where: { sellerId },
+      where: { sellerId, hidden: false },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: 40,
       select: {
@@ -119,6 +119,7 @@ export async function getPublicProfile(tx: Tx, idOrUsername: string) {
     tx.review.count({
       where: {
         sellerId,
+        hidden: false,
         createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
       },
     }),

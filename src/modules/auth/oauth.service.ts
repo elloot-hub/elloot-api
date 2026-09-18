@@ -11,7 +11,6 @@ import { AppError } from "../../lib/errors";
 import { sanitizeUserText } from "../../lib/sanitize";
 import { allocateUsername } from "../../lib/username";
 import { signAccessToken } from "../../middleware/auth";
-import { revokeAllUserSessions } from "./auth-sessions";
 import { signChallenge, userHas2fa } from "./two-factor.shared";
 
 export type OAuthProvider = "google" | "discord";
@@ -388,29 +387,20 @@ export async function upsertOAuthUser(profile: OAuthProfile) {
         },
       });
 
-      // OAuth provider proved email ownership. If the account was an
-      // unverified password squat, revoke the password so the attacker
-      // cannot keep logging in after the real owner claims via OAuth.
-      const reclaimUnverified =
-        !byEmail.emailVerifiedAt && Boolean(byEmail.passwordHash);
-
-      const updated = await tx.user.update({
+      // OAuth proves email ownership → mark verified and link the provider.
+      // Never clear passwordHash: a normal email+password signup also has
+      // emailVerifiedAt=null until/unless we add email verification, so wiping
+      // the password here broke legitimate users who later linked Google/Discord.
+      return tx.user.update({
         where: { id: byEmail.id },
         data: {
           // Only fill blanks on first link — never clobber existing profile.
           name: byEmail.name ?? safeName ?? null,
           avatarUrl: byEmail.avatarUrl ?? profile.avatarUrl ?? null,
-          emailVerifiedAt: new Date(),
+          emailVerifiedAt: byEmail.emailVerifiedAt ?? new Date(),
           lastSeenAt: new Date(),
-          ...(reclaimUnverified ? { passwordHash: null } : {}),
         },
       });
-
-      if (reclaimUnverified) {
-        await revokeAllUserSessions(tx, byEmail.id);
-      }
-
-      return updated;
     }
 
     return tx.user.create({

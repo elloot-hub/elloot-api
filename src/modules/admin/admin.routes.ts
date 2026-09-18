@@ -13,12 +13,18 @@ import { adminMediaRouter } from "./admin-media.routes";
 import { adminChatsRouter } from "./admin-chats.routes";
 import { adminVisibilityRouter } from "./admin-visibility.routes";
 import { adminHomeSectionsRouter } from "./admin-home-sections.routes";
+import { adminMetricsRouter } from "./admin-metrics.routes";
+import { adminReviewsRouter } from "./admin-reviews.routes";
+import { adminProductTypesRouter } from "./admin-product-types.routes";
 
 export const adminRouter = Router();
 
 adminRouter.use("/auth", adminAuthRouter);
 adminRouter.use(requireAdminAuth);
 adminRouter.use("/stats", adminStatsRouter);
+adminRouter.use("/metrics", adminMetricsRouter);
+adminRouter.use("/reviews", adminReviewsRouter);
+adminRouter.use("/product-types", adminProductTypesRouter);
 adminRouter.use("/listings", listingsAdminRouter);
 adminRouter.use("/disputes", adminDisputesRouter);
 adminRouter.use("/users", adminUsersRouter);

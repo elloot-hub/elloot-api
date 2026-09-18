@@ -1,10 +1,9 @@
 import { Router } from "express";
 import { withVisibilityBadges } from "../visibility/visibility.badges";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import type { Category, Prisma } from "@prisma/client";
 import { withRlsTransaction } from "../../databases";
 import { asyncHandler } from "../../lib/async-handler";
+import { resolveProductTypesForCategory } from "./product-types";
 
 export const catalogRouter = Router();
 
@@ -280,34 +279,15 @@ catalogRouter.get(
 /** Configurable product kinds for the sell form ("O que você está vendendo?"). */
 catalogRouter.get(
   "/product-types",
-  asyncHandler(async (_req, res) => {
-    const file = path.join(
-      process.cwd(),
-      "prisma",
-      "data",
-      "product-types.json",
-    );
-    let types: Array<{ value: string; label: string; sortOrder?: number }> = [];
-    try {
-      const raw = JSON.parse(readFileSync(file, "utf8")) as unknown;
-      if (Array.isArray(raw)) types = raw as typeof types;
-    } catch {
-      types = [
-        { value: "SERVICO", label: "Serviço", sortOrder: 0 },
-        { value: "CONTA", label: "Conta", sortOrder: 1 },
-        { value: "GOLD", label: "Gold", sortOrder: 2 },
-        { value: "ITEM", label: "Item", sortOrder: 3 },
-        { value: "OUTROS", label: "Outros", sortOrder: 4 },
-      ];
-    }
+  asyncHandler(async (req, res) => {
+    const categoryId =
+      typeof req.query.categoryId === "string"
+        ? req.query.categoryId.trim()
+        : undefined;
 
-    const productTypes = [...types]
-      .filter((t) => t?.value && t?.label)
-      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-      .map((t) => ({
-        value: String(t.value),
-        label: String(t.label),
-      }));
+    const productTypes = await withRlsTransaction({}, async (tx) =>
+      resolveProductTypesForCategory(tx, categoryId || null),
+    );
 
     res.json({ success: true, productTypes });
   }),

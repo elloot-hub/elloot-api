@@ -155,12 +155,48 @@ model Category {
   listings               Listing[]
   visibilityProducts     VisibilityProduct[]
   homeSections           HomeSection[]
+  productTypes           CategoryProductType[]
 
   @@index([parentId, status])
   @@index([status, showInMenu])
   @@index([status, isFeatured])
   @@index([slug])
   @@map("categories")
+}
+
+/// Global catalog for sell-form "O que você está vendendo?" options.
+model ProductType {
+  id         String                @id @default(cuid())
+  /// Stable code stored on listings (e.g. CONTA, ITEM).
+  code       String                @unique
+  label      String
+  sortOrder  Int                   @default(0)
+  active     Boolean               @default(true)
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
+  categories CategoryProductType[]
+
+  @@index([active, sortOrder])
+  @@map("product_types")
+}
+
+/// Which product types a (sub)category exposes on /sell.
+model CategoryProductType {
+  id            String      @id @default(cuid())
+  categoryId    String
+  productTypeId String
+  enabled       Boolean     @default(true)
+  sortOrder     Int         @default(0)
+  /// Optional label override for this category only.
+  labelOverride String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  category      Category    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  productType   ProductType @relation(fields: [productTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, productTypeId])
+  @@index([categoryId, enabled, sortOrder])
+  @@map("category_product_types")
 }
 
 /// Uploaded binary tracked by the media CDN layer.
@@ -531,6 +567,8 @@ model Review {
   /// 1–5 stars
   rating    Int
   comment   String?
+  /// Admin moderation: hidden reviews are excluded from public profiles.
+  hidden    Boolean  @default(false)
   createdAt DateTime @default(now())
   buyer     User     @relation("BuyerReviews", fields: [buyerId], references: [id])
   listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
@@ -539,6 +577,7 @@ model Review {
 
   @@index([sellerId, createdAt])
   @@index([listingId, createdAt])
+  @@index([hidden, createdAt])
   @@map("reviews")
 }
 

@@ -28,10 +28,27 @@ const createSchema = z.object({
   isAdult: z.boolean().optional().default(false),
   status: z.enum(["ACTIVE", "INACTIVE"]).optional().default("ACTIVE"),
   sortOrder: z.number().int().min(0).max(10_000).optional(),
-  orderInstruction: z.string().trim().max(4000).optional(),
+  orderInstruction: z
+    .union([z.string().trim().max(4000), z.literal(""), z.null()])
+    .optional()
+    .transform((v) => (v === "" || v === undefined || v === null ? null : v)),
 });
 
-const updateSchema = createSchema.partial();
+const updateSchema = createSchema.partial().extend({
+  productTypes: z
+    .array(
+      z.object({
+        productTypeId: z.string().min(1),
+        enabled: z.boolean(),
+        sortOrder: z.number().int().min(0).max(10_000).optional(),
+        labelOverride: z
+          .union([z.string().trim().max(60), z.literal(""), z.null()])
+          .optional()
+          .transform((v) => (v === "" || v === undefined ? null : v)),
+      }),
+    )
+    .optional(),
+});
 
 const listQuerySchema = z.object({
   q: z.string().trim().max(120).optional(),
@@ -248,7 +265,7 @@ adminCategoriesRouter.get(
     const id = routeParam(req.params.id);
     const actor = actorOf(req);
 
-    const category = await withRlsTransaction({ actor }, async (tx) => {
+    const result = await withRlsTransaction({ actor }, async (tx) => {
       const row = await tx.category.findUnique({
         where: { id },
         select: listSelect,
@@ -256,10 +273,53 @@ adminCategoriesRouter.get(
       if (!row) {
         throw new AppError(404, "Category not found", "NOT_FOUND");
       }
-      return serialize(row);
+
+      const [allTypes, links] = await Promise.all([
+        tx.productType.findMany({
+          orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
+          select: {
+            id: true,
+            code: true,
+            label: true,
+            sortOrder: true,
+            active: true,
+          },
+        }),
+        tx.categoryProductType.findMany({
+          where: { categoryId: id },
+          select: {
+            productTypeId: true,
+            enabled: true,
+            sortOrder: true,
+            labelOverride: true,
+          },
+        }),
+      ]);
+
+      const linkByType = new Map(links.map((l) => [l.productTypeId, l]));
+      const hasCustom = links.length > 0;
+
+      return {
+        category: {
+          ...serialize(row),
+          productTypesConfigured: hasCustom,
+          productTypes: allTypes.map((t) => {
+            const link = linkByType.get(t.id);
+            return {
+              productTypeId: t.id,
+              code: t.code,
+              label: t.label,
+              active: t.active,
+              enabled: hasCustom ? Boolean(link?.enabled) : t.active,
+              sortOrder: link?.sortOrder ?? t.sortOrder,
+              labelOverride: link?.labelOverride ?? null,
+            };
+          }),
+        },
+      };
     });
 
-    res.json({ category });
+    res.json(result);
   }),
 );
 
@@ -360,13 +420,43 @@ adminCategoriesRouter.patch(
         select: listSelect,
       });
 
+      if (body.productTypes !== undefined) {
+        const typeIds = body.productTypes.map((p) => p.productTypeId);
+        const found = await tx.productType.findMany({
+          where: { id: { in: typeIds } },
+          select: { id: true },
+        });
+        if (found.length !== new Set(typeIds).size) {
+          throw new AppError(400, "Invalid product type id", "INVALID_PRODUCT_TYPE");
+        }
+
+        await tx.categoryProductType.deleteMany({ where: { categoryId: id } });
+        if (body.productTypes.length > 0) {
+          await tx.categoryProductType.createMany({
+            data: body.productTypes.map((p, index) => ({
+              categoryId: id,
+              productTypeId: p.productTypeId,
+              enabled: p.enabled,
+              sortOrder: p.sortOrder ?? index,
+              labelOverride: p.labelOverride
+                ? sanitizeUserText(p.labelOverride, 60)
+                : null,
+            })),
+          });
+        }
+      }
+
       await tx.auditLog.create({
         data: {
           actorId: actor.id,
           action: "category.updated",
           entityType: "Category",
           entityId: id,
-          meta: { from: existing.slugPath, to: slugPath },
+          meta: {
+            from: existing.slugPath,
+            to: slugPath,
+            productTypes: body.productTypes?.length ?? undefined,
+          },
         },
       });
 

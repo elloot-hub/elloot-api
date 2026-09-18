@@ -23,7 +23,9 @@ export const createListingSchema = z
     priceCents: z.number().int().min(MIN_PRICE_CENTS).max(50_000_000).optional(),
     stockQuantity: z.number().int().positive().max(1_000_000).optional().default(1),
     productType: z
-      .enum(["CONTA", "ITEM", "SERVICO", "GOLD", "OUTROS"])
+      .string()
+      .trim()
+      .regex(/^[A-Z][A-Z0-9_]{0,31}$/)
       .optional()
       .nullable(),
     listingModel: z.enum(["NORMAL", "DYNAMIC", "SERVICE"]).optional().default("NORMAL"),
@@ -81,7 +83,9 @@ export const updateListingSchema = z
     priceCents: z.number().int().min(MIN_PRICE_CENTS).max(50_000_000).optional(),
     stockQuantity: z.number().int().positive().max(1_000_000).optional(),
     productType: z
-      .enum(["CONTA", "ITEM", "SERVICO", "GOLD", "OUTROS"])
+      .string()
+      .trim()
+      .regex(/^[A-Z][A-Z0-9_]{0,31}$/)
       .optional()
       .nullable(),
     deliveryMode: z.enum(["MANUAL", "AUTO"]).optional(),

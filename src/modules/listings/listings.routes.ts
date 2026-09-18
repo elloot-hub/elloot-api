@@ -52,6 +52,7 @@ import {
   syncOfferAutoStock,
 } from "./delivery-stock.service";
 import { listingWhereByRef } from "./listing-ref";
+import { assertProductTypeAllowed } from "../catalog/product-types";
 
 export const listingsRouter = Router();
 
@@ -172,6 +173,7 @@ listingsRouter.post(
     let promotedToSeller = false;
     const result = await withRlsTransaction({ actor }, async (tx) => {
       await assertLeafCategory(tx, body.categoryId);
+      await assertProductTypeAllowed(tx, body.categoryId, body.productType);
 
       if (actor.role === "BUYER") {
         await tx.user.update({
@@ -413,7 +415,7 @@ listingsRouter.get(
 
     const reviewRows = await withRlsTransaction({ actor }, (tx) =>
       tx.review.findMany({
-        where: { sellerId: row.listing.seller.id },
+        where: { sellerId: row.listing.seller.id, hidden: false },
         select: { rating: true },
         take: 5000,
       }),
@@ -493,6 +495,18 @@ listingsRouter.patch(
       const listing = await getOwnedListingTx(tx, id, actor);
       if (listing.status === "SOLD") {
         throw new AppError(409, "Listing already sold", "LISTING_SOLD");
+      }
+
+      if (body.categoryId !== undefined || body.productType !== undefined) {
+        const nextCategoryId = body.categoryId ?? listing.categoryId;
+        const nextProductType =
+          body.productType !== undefined
+            ? body.productType
+            : listing.productType;
+        if (body.categoryId !== undefined) {
+          await assertLeafCategory(tx, nextCategoryId);
+        }
+        await assertProductTypeAllowed(tx, nextCategoryId, nextProductType);
       }
 
       if (!["ACTIVE", "PAUSED"].includes(listing.status)) {

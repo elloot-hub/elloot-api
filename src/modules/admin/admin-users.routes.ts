@@ -286,7 +286,7 @@ adminUsersRouter.get(
       const [salesCount, ratings] = await Promise.all([
         tx.order.count({ where: { sellerId: id, status: "COMPLETED" } }),
         tx.review.findMany({
-          where: { sellerId: id },
+          where: { sellerId: id, hidden: false },
           select: { rating: true },
         }),
       ]);

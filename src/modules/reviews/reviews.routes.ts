@@ -26,6 +26,7 @@ const reviewSelect = {
   buyerId: true,
   rating: true,
   comment: true,
+  hidden: true,
   createdAt: true,
   buyer: { select: { id: true, name: true, avatarUrl: true } },
   listing: {
@@ -88,13 +89,14 @@ reviewsRouter.get(
       }
 
       const allRatings = await tx.review.findMany({
-        where: { listingId },
+        where: { listingId, hidden: false },
         select: { rating: true },
       });
 
       const reviews = await tx.review.findMany({
         where: {
           listingId,
+          hidden: false,
           ...(cursor ? { id: { lt: cursor } } : {}),
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -145,13 +147,13 @@ reviewsRouter.get(
     const actor = actorOf(req);
     const { reviews, summary } = await withRlsTransaction({ actor }, async (tx) => {
       const all = await tx.review.findMany({
-        where: { sellerId: actor.id },
+        where: { sellerId: actor.id, hidden: false },
         orderBy: { createdAt: "desc" },
         take: 50,
         select: reviewSelect,
       });
       const ratings = await tx.review.findMany({
-        where: { sellerId: actor.id },
+        where: { sellerId: actor.id, hidden: false },
         select: { rating: true },
       });
       return {

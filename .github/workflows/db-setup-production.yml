@@ -117,6 +117,8 @@ jobs:
           npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/031_home_sections_public_read.sql --schema prisma/schema.prisma
           npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/033_listing_placements_seller_read.sql --schema prisma/schema.prisma
           npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/034_visibility_queue_paid.sql --schema prisma/schema.prisma
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/035_reviews_moderation.sql --schema prisma/schema.prisma
+          npx tsx scripts/with-db-env.ts npx prisma db execute --file prisma/sql/036_product_types.sql --schema prisma/schema.prisma
 
       - name: Apply RLS (db:secure)
         env:
