@@ -7,15 +7,6 @@ export type ProductTypeOption = {
 };
 
 type Tx = {
-  productType: {
-    findMany: (args: {
-      where?: Prisma.ProductTypeWhereInput;
-      orderBy?: Prisma.ProductTypeOrderByWithRelationInput[];
-      select: { id: true; code: true; label: true; sortOrder: true };
-    }) => Promise<
-      Array<{ id: string; code: string; label: string; sortOrder: number }>
-    >;
-  };
   categoryProductType: {
     findMany: (args: {
       where: Prisma.CategoryProductTypeWhereInput;
@@ -51,26 +42,17 @@ type Tx = {
   };
 };
 
-async function globalActiveTypes(tx: Tx): Promise<ProductTypeOption[]> {
-  const rows = await tx.productType.findMany({
-    where: { active: true },
-    orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
-    select: { id: true, code: true, label: true, sortOrder: true },
-  });
-  return rows.map((r) => ({ value: r.code, label: r.label }));
-}
-
 /**
  * Resolve sell-form options for a category:
  * 1) own CategoryProductType rows (enabled + active type)
- * 2) else walk parents
- * 3) else all active global types
+ * 2) else walk parents for the same
+ * 3) else empty — types never appear until explicitly linked
  */
 export async function resolveProductTypesForCategory(
   tx: Tx,
   categoryId: string | null | undefined,
 ): Promise<ProductTypeOption[]> {
-  if (!categoryId) return globalActiveTypes(tx);
+  if (!categoryId) return [];
 
   let currentId: string | null = categoryId;
   const seen = new Set<string>();
@@ -112,7 +94,7 @@ export async function resolveProductTypesForCategory(
     currentId = cat?.parentId ?? null;
   }
 
-  return globalActiveTypes(tx);
+  return [];
 }
 
 export async function assertProductTypeAllowed(

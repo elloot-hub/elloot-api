@@ -14,15 +14,68 @@ function actorOf(req: { user?: RlsActor }): RlsActor {
 
 const CODE_RE = /^[A-Z][A-Z0-9_]{0,31}$/;
 
-function serialize(row: {
+function slugifyProductTypeCode(raw: string) {
+  let code = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_")
+    .slice(0, 32);
+  if (!code) code = "TIPO";
+  if (!/^[A-Z]/.test(code)) code = `T_${code}`.slice(0, 32);
+  return code;
+}
+
+async function allocateUniqueCode(
+  tx: {
+    productType: {
+      findUnique: (args: {
+        where: { code: string };
+        select: { id: true };
+      }) => Promise<{ id: string } | null>;
+    };
+  },
+  preferred: string,
+) {
+  const base = slugifyProductTypeCode(preferred).slice(0, 28) || "TIPO";
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const code =
+      attempt === 0 ? base : `${base.slice(0, 28)}_${attempt}`.slice(0, 32);
+    if (!CODE_RE.test(code)) continue;
+    const exists = await tx.productType.findUnique({
+      where: { code },
+      select: { id: true },
+    });
+    if (!exists) return code;
+  }
+  throw new AppError(
+    500,
+    "Could not allocate product type code",
+    "PRODUCT_TYPE_CODE_ALLOC",
+  );
+}
+
+type LinkedCategory = {
   id: string;
-  code: string;
-  label: string;
-  sortOrder: number;
-  active: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}) {
+  name: string;
+  slugPath: string;
+  enabled: boolean;
+};
+
+function serialize(
+  row: {
+    id: string;
+    code: string;
+    label: string;
+    sortOrder: number;
+    active: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  categories: LinkedCategory[] = [],
+) {
   return {
     id: row.id,
     code: row.code,
@@ -31,15 +84,18 @@ function serialize(row: {
     active: row.active,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    categories,
   };
 }
 
 const createSchema = z.object({
+  /** Optional; when omitted the API derives a unique code from the label. */
   code: z
     .string()
     .trim()
     .transform((v) => v.toUpperCase())
-    .pipe(z.string().regex(CODE_RE)),
+    .pipe(z.string().regex(CODE_RE))
+    .optional(),
   label: z.string().trim().min(2).max(60),
   sortOrder: z.number().int().min(0).max(10_000).optional(),
   active: z.boolean().optional().default(true),
@@ -58,8 +114,29 @@ adminProductTypesRouter.get(
     const items = await withRlsTransaction({ actor }, async (tx) => {
       const rows = await tx.productType.findMany({
         orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
+        include: {
+          categories: {
+            select: {
+              enabled: true,
+              category: {
+                select: { id: true, name: true, slugPath: true },
+              },
+            },
+            orderBy: { category: { name: "asc" } },
+          },
+        },
       });
-      return rows.map(serialize);
+      return rows.map((row) =>
+        serialize(
+          row,
+          row.categories.map((link) => ({
+            id: link.category.id,
+            name: link.category.name,
+            slugPath: link.category.slugPath,
+            enabled: link.enabled,
+          })),
+        ),
+      );
     });
     res.json({ items });
   }),
@@ -73,18 +150,27 @@ adminProductTypesRouter.post(
     const label = sanitizeUserText(body.label, 60);
 
     const item = await withRlsTransaction({ actor }, async (tx) => {
-      const existing = await tx.productType.findUnique({
-        where: { code: body.code },
-        select: { id: true },
-      });
-      if (existing) {
-        throw new AppError(409, "Product type code already exists", "CONFLICT");
-      }
+      const code = body.code
+        ? await (async () => {
+            const existing = await tx.productType.findUnique({
+              where: { code: body.code! },
+              select: { id: true },
+            });
+            if (existing) {
+              throw new AppError(
+                409,
+                "Product type code already exists",
+                "CONFLICT",
+              );
+            }
+            return body.code!;
+          })()
+        : await allocateUniqueCode(tx, label);
 
       const max = await tx.productType.aggregate({ _max: { sortOrder: true } });
       const created = await tx.productType.create({
         data: {
-          code: body.code,
+          code,
           label,
           sortOrder: body.sortOrder ?? (max._max.sortOrder ?? -1) + 1,
           active: body.active,
