@@ -65,7 +65,12 @@ async function resolveCategoryListings(
       },
     }),
     take: Math.min(Math.max(limit, 1), 48),
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    orderBy: [
+      { visibilityBoost: "desc" },
+      { reachPriority: "desc" },
+      { createdAt: "desc" },
+      { id: "desc" },
+    ],
     select: homeListingSelect,
   });
 }
@@ -82,6 +87,7 @@ async function resolveMetricListings(
       where: activeListingWhere(),
       take,
       orderBy: [
+        { visibilityBoost: "desc" },
         { favorites: { _count: "desc" } },
         { salesCount: "desc" },
         { createdAt: "desc" },
@@ -114,6 +120,7 @@ async function resolveMetricListings(
       where: activeListingWhere(),
       take,
       orderBy: [
+        { visibilityBoost: "desc" },
         { salesCount: "desc" },
         { createdAt: "desc" },
         { id: "desc" },
@@ -122,11 +129,16 @@ async function resolveMetricListings(
     });
   }
 
-  // RECENT (default)
+  // RECENT (default) — impulso + alcance + novidade
   return tx.listing.findMany({
     where: activeListingWhere(),
     take,
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    orderBy: [
+      { visibilityBoost: "desc" },
+      { reachPriority: "desc" },
+      { createdAt: "desc" },
+      { id: "desc" },
+    ],
     select: homeListingSelect,
   });
 }

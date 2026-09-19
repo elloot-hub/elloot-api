@@ -386,20 +386,32 @@ catalogRouter.get(
         : undefined;
     const sortRaw =
       typeof req.query.sort === "string" ? req.query.sort.trim() : "recent";
+    /** Default "recent" = exposição paga + plano de alcance + novidade. */
     const orderBy: Prisma.ListingOrderByWithRelationInput[] =
       sortRaw === "price_asc"
         ? [{ priceCents: "asc" }, { id: "asc" }]
         : sortRaw === "price_desc"
           ? [{ priceCents: "desc" }, { id: "desc" }]
           : sortRaw === "best_sellers" || sortRaw === "bestsellers"
-            ? [{ salesCount: "desc" }, { createdAt: "desc" }, { id: "desc" }]
+            ? [
+                { visibilityBoost: "desc" },
+                { salesCount: "desc" },
+                { createdAt: "desc" },
+                { id: "desc" },
+              ]
             : sortRaw === "reputation"
               ? [
+                  { visibilityBoost: "desc" },
                   { seller: { reputationScore: "desc" } },
                   { salesCount: "desc" },
                   { id: "desc" },
                 ]
-              : [{ reachPriority: "desc" }, { createdAt: "desc" }, { id: "desc" }];
+              : [
+                  { visibilityBoost: "desc" },
+                  { reachPriority: "desc" },
+                  { createdAt: "desc" },
+                  { id: "desc" },
+                ];
 
     const payload = await withRlsTransaction({ actor: null }, async (tx) => {
       let categoryFilter: Prisma.CategoryWhereInput | undefined;

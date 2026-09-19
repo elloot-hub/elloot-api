@@ -259,6 +259,8 @@ model Listing {
   feeBps               Int?
   /// Snapshot of plan priority for catalog ranking.
   reachPriority        Int                      @default(0)
+  /// Max active visibility product priority (denormalized for catalog sort).
+  visibilityBoost      Int                      @default(0)
   favorites            Favorite[]
   events               ListingEvent[]
   media                ListingMedia[]
@@ -275,7 +277,7 @@ model Listing {
 
   @@index([status, categoryId])
   @@index([sellerId])
-  @@index([status, reachPriority, createdAt])
+  @@index([status, visibilityBoost, reachPriority, createdAt])
   @@index([reachPlanId])
   @@map("listings")
 }

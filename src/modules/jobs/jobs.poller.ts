@@ -8,6 +8,7 @@ import { withServiceTransaction } from "../../databases";
 import {
   expireVisibilityPlacements,
   promoteQueuedPlacements,
+  reconcileVisibilityBoosts,
 } from "../visibility/visibility.service";
 import { invalidateHomeSectionsCache } from "../home/home.cache";
 
@@ -21,7 +22,8 @@ async function tick() {
     const placementResult = await withServiceTransaction(async (tx) => {
       const expiredPlacements = await expireVisibilityPlacements(tx);
       const promoted = await promoteQueuedPlacements(tx);
-      return { ...expiredPlacements, ...promoted };
+      const boosts = await reconcileVisibilityBoosts(tx);
+      return { ...expiredPlacements, ...promoted, ...boosts };
     });
     if (
       placementResult.expiredPlacements > 0 ||

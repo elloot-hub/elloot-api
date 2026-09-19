@@ -6,6 +6,10 @@ import {
 import { AppError } from "../../lib/errors";
 import { listingWhereByRef } from "../listings/listing-ref";
 import { activePlacementWhere } from "./visibility.badges";
+import {
+  syncListingVisibilityBoost,
+  syncListingVisibilityBoostMany,
+} from "./visibility.boost";
 
 type Tx = Prisma.TransactionClient;
 
@@ -312,6 +316,7 @@ export async function purchaseVisibilityWithWallet(
       },
       include: { product: true },
     });
+    await syncListingVisibilityBoost(tx, listing.id, now);
     return {
       placement: serializePlacement(updated),
       extended: true as const,
@@ -353,6 +358,7 @@ export async function purchaseVisibilityWithWallet(
     },
     include: { product: true },
   });
+  await syncListingVisibilityBoost(tx, listing.id, now);
 
   return {
     placement: serializePlacement(created),
@@ -363,14 +369,28 @@ export async function purchaseVisibilityWithWallet(
 }
 
 export async function expireVisibilityPlacements(tx: Tx) {
-  const result = await tx.listingPlacement.updateMany({
+  const now = new Date();
+  const due = await tx.listingPlacement.findMany({
     where: {
       status: "ACTIVE",
-      endsAt: { lte: new Date() },
+      endsAt: { lte: now },
     },
+    select: { id: true, listingId: true },
+  });
+  if (due.length === 0) {
+    return { expiredPlacements: 0 };
+  }
+
+  await tx.listingPlacement.updateMany({
+    where: { id: { in: due.map((row) => row.id) } },
     data: { status: "EXPIRED" },
   });
-  return { expiredPlacements: result.count };
+  await syncListingVisibilityBoostMany(
+    tx,
+    due.map((row) => row.listingId),
+    now,
+  );
+  return { expiredPlacements: due.length };
 }
 
 /** Promote oldest PENDING placements into free slots. */
@@ -450,12 +470,40 @@ export async function promoteQueuedPlacements(tx: Tx) {
           endsAt,
         },
       });
+      await syncListingVisibilityBoost(tx, item.listingId, now);
       promoted += 1;
       remaining -= 1;
     }
   }
 
   return { promoted, cancelled };
+}
+
+/**
+ * Recomputes visibilityBoost for listings with active placements and
+ * clears stale boosts. Safe to run on every job tick.
+ */
+export async function reconcileVisibilityBoosts(tx: Tx) {
+  const now = new Date();
+  const active = await tx.listingPlacement.findMany({
+    where: {
+      ...activePlacementWhere(now),
+      product: { active: true },
+    },
+    select: { listingId: true },
+  });
+  const activeIds = [...new Set(active.map((row) => row.listingId))];
+  await syncListingVisibilityBoostMany(tx, activeIds, now);
+
+  await tx.listing.updateMany({
+    where: {
+      visibilityBoost: { gt: 0 },
+      ...(activeIds.length > 0 ? { id: { notIn: activeIds } } : {}),
+    },
+    data: { visibilityBoost: 0 },
+  });
+
+  return { activeBoosted: activeIds.length };
 }
 
 export async function loadVisibilityAdminStats(tx: Tx) {
