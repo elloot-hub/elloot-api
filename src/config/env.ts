@@ -32,7 +32,7 @@ const envSchema = z.object({
   TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(1),
   PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(1000),
   ESCROW_AUTO_RELEASE_HOURS: z.coerce.number().int().positive().default(48),
-  PAYMENT_PROVIDER: z.enum(["sandbox", "efi"]).default("sandbox"),
+  PAYMENT_PROVIDER: z.enum(["sandbox", "efi", "purincash"]).default("sandbox"),
   EFI_CLIENT_ID: z.string().optional(),
   EFI_CLIENT_SECRET: z.string().optional(),
   EFI_CERT_PATH: z.string().optional(),
@@ -44,6 +44,13 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  /** PurinCash API key (ps_live_ / ps_test_). Required when PAYMENT_PROVIDER=purincash. */
+  PURINCASH_API_KEY: z.string().optional(),
+  /** HMAC secret for X-Webhook-Signature. Required when PAYMENT_PROVIDER=purincash. */
+  PURINCASH_WEBHOOK_SECRET: z.string().optional(),
+  PURINCASH_API_BASE: z.string().default("https://api.purincash.com"),
+  /** Override webhook callback URL. Default: {APP_URL}/api/payments/webhooks/purincash */
+  PURINCASH_CALLBACK_URL: z.string().optional(),
   /**
    * When true, POST /api/payments/sandbox/confirm is allowed.
    * Defaults to false in production, true otherwise.
@@ -170,7 +177,7 @@ if (
   data.PAYMENT_PROVIDER === "sandbox"
 ) {
   console.error(
-    "PAYMENT_PROVIDER=sandbox is not allowed in production. Set PAYMENT_PROVIDER=efi.",
+    "PAYMENT_PROVIDER=sandbox is not allowed in production. Set PAYMENT_PROVIDER=efi or purincash.",
   );
   process.exit(1);
 }
@@ -258,6 +265,24 @@ if (data.PAYMENT_PROVIDER === "efi") {
   }
 }
 
+if (data.PAYMENT_PROVIDER === "purincash") {
+  const missing: string[] = [];
+  if (!data.PURINCASH_API_KEY?.trim()) missing.push("PURINCASH_API_KEY");
+  if (!data.PURINCASH_WEBHOOK_SECRET?.trim()) {
+    missing.push("PURINCASH_WEBHOOK_SECRET");
+  }
+  if (missing.length) {
+    console.error(
+      `PAYMENT_PROVIDER=purincash requires: ${missing.join(", ")}`,
+    );
+    process.exit(1);
+  }
+}
+
+const purincashCallbackUrl =
+  data.PURINCASH_CALLBACK_URL?.trim() ||
+  `${data.APP_URL.replace(/\/$/, "")}/api/payments/webhooks/purincash`;
+
 export const env = {
   ...data,
   DATABASE_URL: process.env.DATABASE_URL!,
@@ -268,6 +293,7 @@ export const env = {
   mediaSigningSecret: data.MEDIA_SIGNING_SECRET || data.JWT_SECRET,
   s3Configured,
   allowSandboxPayments,
+  purincashCallbackUrl,
   webPushEnabled: Boolean(
     data.VAPID_PUBLIC_KEY?.trim() &&
       data.VAPID_PRIVATE_KEY?.trim() &&

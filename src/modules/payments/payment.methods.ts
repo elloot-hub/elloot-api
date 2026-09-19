@@ -5,17 +5,24 @@ export type PaymentMethodDto = {
   label: string;
   hint: string;
   available: boolean;
-  provider?: "sandbox" | "efi" | null;
+  provider?: "sandbox" | "efi" | "purincash" | null;
 };
 
 export function listPaymentMethods() {
+  const pixProvider =
+    env.PAYMENT_PROVIDER === "efi"
+      ? "efi"
+      : env.PAYMENT_PROVIDER === "purincash"
+        ? "purincash"
+        : "sandbox";
+
   const methods: PaymentMethodDto[] = [
     {
       id: "pix",
       label: "PIX",
       hint: "Aprovação na hora",
       available: true,
-      provider: env.PAYMENT_PROVIDER === "efi" ? "efi" : "sandbox",
+      provider: pixProvider,
     },
     {
       id: "card",

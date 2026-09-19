@@ -13,6 +13,7 @@ import type { RlsActor } from "../../databases";
 import { confirmSandboxPayment } from "./sandbox.service";
 import { syncEfiPayment } from "./efi/efi.service";
 import { listPaymentMethods } from "./payment.methods";
+import { purincashWebhookHandler } from "./purincash/purincash.webhook";
 
 export const paymentsRouter = Router();
 
@@ -56,6 +57,17 @@ paymentsRouter.post(
     const body = confirmSchema.parse(req.body);
     const result = await syncEfiPayment(body.providerRef, actorOf(req));
     res.json({ ok: true, ...result });
+  }),
+);
+
+/**
+ * PurinCash PIX webhook (HMAC on raw body).
+ * Mount express.raw for this path in app.ts before express.json.
+ */
+paymentsRouter.post(
+  "/webhooks/purincash",
+  asyncHandler(async (req, res) => {
+    await purincashWebhookHandler(req, res);
   }),
 );
 
